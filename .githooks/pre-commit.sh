@@ -81,7 +81,20 @@ test_syntax() {
     fi
     
     # Check hook scripts
-    for script in hooks/*.sh tests/*.sh 2>/dev/null; do
+    # -------------------------------------------------------------commented 2508071232_EDT_ayahi
+    # # for script in hooks/*.sh tests/*.sh 2>/dev/null; do       #commented  2508071228_EDT_ayahi 
+    # for script in $(ls hooks/*.sh tests/*.sh 2>/dev/null); do   #added      2508071228_EDT_ayahi 
+    #     if [ -f "$script" ]; then
+    #         if ! bash -n "$script"; then
+    #             log_error "Syntax error in $script"
+    #             return 1
+    #         fi
+    #     fi
+    # done
+    
+
+    # Or, better and safer (to avoid issues with spaces in filenames), use a find approach: #added   2508071234_EDT_ayahi
+    find hooks tests -name "*.sh" 2>/dev/null | while read -r script; do
         if [ -f "$script" ]; then
             if ! bash -n "$script"; then
                 log_error "Syntax error in $script"
@@ -89,7 +102,7 @@ test_syntax() {
             fi
         fi
     done
-    
+
     return 0
 }
 
