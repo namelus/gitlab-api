@@ -232,17 +232,17 @@ main() {
         run_test_section "Syntax Check" "test_syntax"
         run_test_section "Function Check" "test_functions"
     else
-        # run_test_section "Syntax Validation" "test_syntax"
-        # run_test_section "Dependencies" "test_dependencies"
-        # run_test_section "Function Definitions" "test_functions"
-        # run_test_section "User Commands" "test_user_commands"
-        # run_test_section "Security Check" "test_security"
-        # Instead of just calling the functions, capture their return codes
-        run_test_section "Syntax Validation" "test_syntax" || true
-        run_test_section "Dependencies" "test_dependencies" || true
-        run_test_section "Function Definitions" "test_functions" || true
-        run_test_section "User Commands" "test_user_commands" || true
-        run_test_section "Security Check" "test_security" || true
+        # Disable exit-on-error for test execution  
+        set +e
+        
+        run_test_section "Syntax Validation" "test_syntax"
+        run_test_section "Dependencies" "test_dependencies"
+        run_test_section "Function Definitions" "test_functions"
+        run_test_section "User Commands" "test_user_commands"
+        run_test_section "Security Check" "test_security"
+        
+        # Re-enable exit-on-error
+        set -e
     fi
     
     # Summary
