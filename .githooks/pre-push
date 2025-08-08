@@ -1,0 +1,81 @@
+#!/bin/bash
+
+# Pre-push Git hook for GitLab API Helper
+set -euo pipefail
+
+remote="$1"
+url="$2"
+
+PROJECT_ROOT="$(git rev-parse --show-toplevel)"
+cd "$PROJECT_ROOT"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
+log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+
+# Check if we should skip hooks
+if [ "${SKIP_HOOKS:-}" = "true" ] || [ "${NO_VERIFY:-}" = "true" ]; then
+    log_info "Push hooks skipped"
+    exit 0
+fi
+
+log_info "íº€ Running pre-push hook for GitLab API Helper..."
+log_info "Remote: $remote"
+log_info "URL: $url"
+
+# Read stdin to get the refs being pushed
+while read local_ref local_sha remote_ref remote_sha; do
+    if [ "$local_sha" = "0000000000000000000000000000000000000000" ]; then
+        log_info "Branch deletion detected, skipping tests"
+        continue
+    fi
+    
+    log_info "Testing push to $remote_ref ($local_sha)"
+    echo "=========================================="
+    
+    # Test 1: Syntax validation
+    log_info "1. Syntax validation..."
+    bash -n gitlab-api.sh || {
+        log_error "Syntax error in gitlab-api.sh"
+        exit 1
+    }
+    log_success "Syntax validation passed"
+    
+    # Test 2: Function validation
+    log_info "2. Function validation..."
+    source ./gitlab-api.sh || {
+        log_error "Failed to source gitlab-api.sh"
+        exit 1
+    }
+    
+    for func in input_token get_list_of_projects make_new_project get_list_of_projects_simple; do
+        if ! declare -f "$func" > /dev/null; then
+            log_error "Required function '$func' not found"
+            exit 1
+        fi
+    done
+    log_success "Function validation passed"
+    
+    # Test 3: Dependencies
+    log_info "3. Dependencies validation..."
+    for cmd in bash curl jq sed grep; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            log_error "Missing dependency: $cmd"
+            exit 1
+        fi
+    done
+    log_success "Dependencies validation passed"
+    
+    echo "=========================================="
+    log_success "All validations passed for $remote_ref"
+done
+
+log_success "í¾‰ Pre-push validation completed!"
+log_success "âœ… Push is ready to proceed"
+exit 0

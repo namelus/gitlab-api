@@ -1,0 +1,35 @@
+#!/bin/bash
+# .githooks/commit-msg
+
+COMMIT_MSG_FILE="$1"
+COMMIT_MSG=$(head -n1 "$COMMIT_MSG_FILE")
+
+# Conventional commit pattern
+CONVENTIONAL_REGEX="^(feat|fix|docs|style|refactor|test|chore)(\([a-z0-9_-]+\))?: .+"
+
+# Special cases that bypass strict rules
+BYPASS_REGEX="^(wip|hotfix|merge|revert)(:|$)"
+
+if [[ "$COMMIT_MSG" =~ $BYPASS_REGEX ]]; then
+    echo "[INFO] ℹ️ Bypassing commit message enforcement for: $COMMIT_MSG"
+    exit 0
+fi
+
+if [[ "$COMMIT_MSG" =~ $CONVENTIONAL_REGEX ]]; then
+    echo "[SUCCESS] ✅ Commit message follows Conventional Commit format."
+    exit 0
+else
+    # If it looks like plain text without type, auto-prepend chore:
+    if [[ ! "$COMMIT_MSG" =~ ^[a-z]+: ]]; then
+        echo "[WARN] ⚠️ Commit message not in Conventional Commit format."
+        echo "[INFO] Auto-prepending 'chore:' to your message."
+        sed -i "1s|^|chore: $COMMIT_MSG|" "$COMMIT_MSG_FILE"
+        exit 0
+    else
+        echo "[ERROR] ❌ Invalid commit message format!"
+        echo "Expected: type(scope): description"
+        echo "Types: feat, fix, docs, style, refactor, test, chore"
+        echo "Example: feat(api): add project creation function"
+        exit 1
+    fi
+fi

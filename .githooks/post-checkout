@@ -1,0 +1,36 @@
+#!/bin/bash
+#
+# post-checkout hook
+# This runs after you check out a branch or commit.
+# Arguments:
+#   $1 - previous HEAD ref
+#   $2 - new HEAD ref
+#   $3 - checkout type (1 = branch checkout, 0 = file checkout)
+
+echo "📦 post-checkout hook triggered..."
+echo "Previous HEAD: $1"
+echo "New HEAD:      $2"
+if [ "$3" -eq 1 ]; then
+    echo "Checkout type: Branch switch"
+else
+    echo "Checkout type: File checkout"
+fi
+
+# Optional: run debug-precommit test after checkout
+if [ -f "./debug-precommit.sh" ]; then
+    echo "Running debug-precommit.sh..."
+    bash ./debug-precommit.sh
+fi
+
+# Optional: refresh GitLab project list after checkout
+if [ -f "./gitlab-api.sh" ]; then
+    source ./gitlab-api.sh
+    if token=$(get_env_variable "GITLAB_API_TOKEN" 2>/dev/null); then
+        echo "Fetching updated project list from GitLab..."
+        get_list_of_projects_simple "$token"
+    else
+        echo "⚠️  No GitLab token found in ~/.env — skipping project list update."
+    fi
+fi
+
+echo "✅ post-checkout tasks completed."
