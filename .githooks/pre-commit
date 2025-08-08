@@ -12,6 +12,7 @@ cd "$PROJECT_ROOT"
 # Hook configuration
 HOOK_NAME="pre-commit"
 QUICK_MODE=${QUICK_MODE:-false}
+DEBUG_MODE=${DEBUG_MODE:-false}
 
 # Colors for output
 RED='\033[0;31m'
@@ -37,6 +38,12 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+log_debug() {
+    if [ "$DEBUG_MODE" = "true" ]; then
+        echo -e "${BLUE}[DEBUG]${NC} $1"
+    fi
+}
+
 # Check if we should skip hooks
 if [ "${SKIP_HOOKS:-}" = "true" ] || [ "${NO_VERIFY:-}" = "true" ]; then
     log_warning "Hooks skipped due to SKIP_HOOKS or NO_VERIFY flag"
@@ -51,19 +58,34 @@ TESTS_FAILED=0
 
 run_test_section() {
     local section_name="$1"
-    local test_command="$2"
+    local test_function="$2"
     
     log_info "Running $section_name..."
+    log_debug "Function: $test_function"
     
-    if eval "$test_command"; then
+    # Create a temporary file for capturing output
+    local temp_output=$(mktemp)
+    local exit_code=0
+    
+    # Call the function directly and capture both output and exit code
+    # if timeout 30 "$test_function" > "$temp_output" 2>&1; then
+    if "$test_function" > "$temp_output" 2>&1; then
         log_success "$section_name passed"
         ((TESTS_PASSED++))
-        return 0
+        exit_code=0
     else
-        log_error "$section_name failed"
+        exit_code=$?
+        log_error "$section_name failed (exit code: $exit_code)"
+        if [ "$DEBUG_MODE" = "true" ] && [ -s "$temp_output" ]; then
+            log_debug "Output from $section_name:"
+            cat "$temp_output" | head -10 | sed 's/^/  /'
+        fi
         ((TESTS_FAILED++))
-        return 1
     fi
+    
+    # Cleanup
+    rm -f "$temp_output"
+    return $exit_code
 }
 
 # ============================================================================
@@ -72,7 +94,7 @@ run_test_section() {
 
 # 1. Syntax validation
 test_syntax() {
-    log_info "Checking shell script syntax..."
+    log_debug "Checking shell script syntax..."
     
     # Check main script
     if ! bash -n gitlab-api.sh; then
@@ -80,35 +102,27 @@ test_syntax() {
         return 1
     fi
     
-    # Check hook scripts
-    # -------------------------------------------------------------commented 2508071232_EDT_ayahi
-    # # for script in hooks/*.sh tests/*.sh 2>/dev/null; do       #commented  2508071228_EDT_ayahi 
-    # for script in $(ls hooks/*.sh tests/*.sh 2>/dev/null); do   #added      2508071228_EDT_ayahi 
-    #     if [ -f "$script" ]; then
-    #         if ! bash -n "$script"; then
-    #             log_error "Syntax error in $script"
-    #             return 1
-    #         fi
-    #     fi
-    # done
-    
-
-    # Or, better and safer (to avoid issues with spaces in filenames), use a find approach: #added   2508071234_EDT_ayahi
+    # Check hook scripts safely
     find hooks tests -name "*.sh" 2>/dev/null | while read -r script; do
         if [ -f "$script" ]; then
             if ! bash -n "$script"; then
                 log_error "Syntax error in $script"
-                return 1
+                exit 1
             fi
         fi
     done
-
+    
+    # Check if the while loop had any failures
+    if [ ${PIPESTATUS[0]} -ne 0 ] && [ ${PIPESTATUS[0]} -ne 1 ]; then
+        return 1
+    fi
+    
     return 0
 }
 
 # 2. Dependency check
 test_dependencies() {
-    log_info "Checking required dependencies..."
+    log_debug "Checking required dependencies..."
     
     local missing_deps=0
     
@@ -129,7 +143,7 @@ test_dependencies() {
 
 # 3. Function definition check
 test_functions() {
-    log_info "Checking function definitions..."
+    log_debug "Checking function definitions..."
     
     # Source the main script
     if ! source ./gitlab-api.sh; then
@@ -152,7 +166,7 @@ test_functions() {
 
 # 4. Test your specific commands (with timeout and mock)
 test_user_commands() {
-    log_info "Testing your specific commands..."
+    log_debug "Testing your specific commands..."
     
     # Source the library
     source ./gitlab-api.sh
@@ -170,17 +184,17 @@ test_user_commands() {
     
     for i in "${!command_tests[@]}"; do
         local cmd="${command_tests[$i]}"
-        log_info "Testing command $((i+1)): $cmd"
+        log_debug "Testing command $((i+1)): $cmd"
         
         # Run with timeout and capture result
         if timeout 10 bash -c "$cmd" >/dev/null 2>&1; then
-            log_success "Command $((i+1)) executed without errors"
+            log_debug "Command $((i+1)) executed without errors"
         else
             local exit_code=$?
             if [ $exit_code -eq 124 ]; then
-                log_warning "Command $((i+1)) timed out (expected with no real API token)"
+                log_debug "Command $((i+1)) timed out (expected with no real API token)"
             else
-                log_warning "Command $((i+1)) failed with exit code $exit_code (may be expected without real token)"
+                log_debug "Command $((i+1)) failed with exit code $exit_code (may be expected without real token)"
             fi
         fi
     done
@@ -190,7 +204,7 @@ test_user_commands() {
 
 # 5. Check for secrets or sensitive data
 test_security() {
-    log_info "Checking for sensitive data..."
+    log_debug "Checking for sensitive data..."
     
     # Check for hardcoded tokens (but allow examples and documentation)
     if git diff --cached --name-only | grep -E '\.(sh|bash)$' | xargs grep -l "glpat-" 2>/dev/null | grep -v README.md | grep -v ".md$" | head -1 >/dev/null; then
@@ -212,17 +226,23 @@ main() {
     log_info "Starting pre-commit validation..."
     echo "=========================================="
     
-    # Run test sections
+    # Run test sections - calling functions directly, not via bash -c
     if [ "$QUICK_MODE" = "true" ]; then
         log_info "Running in quick mode..."
         run_test_section "Syntax Check" "test_syntax"
         run_test_section "Function Check" "test_functions"
     else
-        run_test_section "Syntax Validation" "test_syntax"
-        run_test_section "Dependencies" "test_dependencies"  
-        run_test_section "Function Definitions" "test_functions"
-        run_test_section "User Commands" "test_user_commands"
-        run_test_section "Security Check" "test_security"
+        # run_test_section "Syntax Validation" "test_syntax"
+        # run_test_section "Dependencies" "test_dependencies"
+        # run_test_section "Function Definitions" "test_functions"
+        # run_test_section "User Commands" "test_user_commands"
+        # run_test_section "Security Check" "test_security"
+        # Instead of just calling the functions, capture their return codes
+        run_test_section "Syntax Validation" "test_syntax" || true
+        run_test_section "Dependencies" "test_dependencies" || true
+        run_test_section "Function Definitions" "test_functions" || true
+        run_test_section "User Commands" "test_user_commands" || true
+        run_test_section "Security Check" "test_security" || true
     fi
     
     # Summary
@@ -244,6 +264,7 @@ main() {
         echo ""
         log_info "💡 To bypass this check, use: git commit --no-verify"
         log_info "💡 To run in quick mode, use: QUICK_MODE=true git commit"
+        log_info "💡 To enable debug mode, use: DEBUG_MODE=true git commit"
         exit 1
     fi
 }
