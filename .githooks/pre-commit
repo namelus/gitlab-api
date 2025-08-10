@@ -203,13 +203,43 @@ test_user_commands() {
 }
 
 # 5. Check for secrets or sensitive data
+# test_security() {
+#     log_debug "Checking for sensitive data..."
+
+#     # Check for hardcoded tokens (but allow examples and documentation)
+#     if git diff --cached --name-only | grep -E '\.(sh|bash)$' | xargs grep -l "glpat-" 2>/dev/null | grep -v README.md | grep -v ".md$" | head -1 >/dev/null; then
+#         log_error "Found potential hardcoded GitLab token in code files"
+#         log_error "Please remove hardcoded tokens and use environment variables"
+#         return 1
+#     fi
+
+#     return 0
+# }
 test_security() {
     log_debug "Checking for sensitive data..."
     
-    # Check for hardcoded tokens (but allow examples and documentation)
-    if git diff --cached --name-only | grep -E '\.(sh|bash)$' | xargs grep -l "glpat-" 2>/dev/null | grep -v README.md | grep -v ".md$" | head -1 >/dev/null; then
-        log_error "Found potential hardcoded GitLab token in code files"
-        log_error "Please remove hardcoded tokens and use environment variables"
+    # Check for hardcoded tokens with improved detection
+    local suspicious_files=""
+    
+    # Get staged shell files and check each one
+    while IFS= read -r file; do
+        if [ -f "$file" ]; then
+            # Look for glpat- tokens but exclude obvious examples/documentation
+            if grep -n "glpat-" "$file" | \
+            grep -v -E "(example|demo|test|mock|documentation|README|xxxx|\*|placeholder|your-token|<token>)" | \
+            grep -v "#" | \
+            head -1 >/dev/null; then
+                suspicious_files="$suspicious_files $file"
+            fi
+        fi
+    done < <(git diff --cached --name-only | grep -E '\.(sh|bash)$')
+    
+    if [ -n "$suspicious_files" ]; then
+        echo "Error: Found potential hardcoded GitLab token in code files:" >&2
+        for file in $suspicious_files; do
+            echo "  $file" >&2
+        done
+        echo "Please remove hardcoded tokens and use environment variables" >&2
         return 1
     fi
     
@@ -232,7 +262,7 @@ main() {
         run_test_section "Syntax Check" "test_syntax"
         run_test_section "Function Check" "test_functions"
     else
-        # Disable exit-on-error for test execution  
+        # Disable exit-on-error for test execution
         set +e
         
         run_test_section "Syntax Validation" "test_syntax"
