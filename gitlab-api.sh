@@ -771,3 +771,446 @@ get_list_of_projects_simple() {
         "https://gitlab.com/api/v4/projects?membership=true&per_page=10" | \
         jq -r '.[] | "\(.name) - \(.last_activity_at)"'
 }
+
+# --- PROJECT MEMBER MANAGEMENT FUNCTIONS ---
+
+##
+# Adds a member to a GitLab project with interactive prompts for role and expiry date.
+#
+# DESCRIPTION:
+#   This function provides an interactive way to add members to GitLab projects using
+#   their email address. It prompts for the user's role and optional expiry date,
+#   then makes the appropriate API call to add the member with comprehensive error
+#   handling and validation.
+#
+# API INTERACTION:
+#   - Endpoint: POST /api/v4/projects/{id}/members
+#   - Authentication: Personal Access Token (PAT) via PRIVATE-TOKEN header
+#   - Content-Type: application/json
+#   - Request Body: JSON object with user_id, access_level, and optional expires_at
+#
+# PARAMETERS:
+#   $1 (string, required) - Project ID or project path (URL-encoded)
+#                          Examples: "123" or "group%2Fproject-name"
+#   
+#   $2 (string, required) - GitLab Personal Access Token (PAT)
+#                          Must have 'api' scope for member management
+#                          Format: "glpat-xxxxxxxxxxxxxxxxxxxx"
+#
+# INTERACTIVE PROMPTS:
+#   1. Email Address: User's GitLab account email
+#   2. Role Selection: Choose from predefined GitLab access levels
+#   3. Expiry Date: Optional expiration date for membership
+#
+# GITLAB ACCESS LEVELS:
+#   10 - Guest: Can view project, create issues and comments
+#   20 - Reporter: Can pull project, download artifacts, create issues/merge requests
+#   30 - Developer: Can push to non-protected branches, manage issues/merge requests
+#   40 - Maintainer: Can push to protected branches, manage project settings
+#   50 - Owner: Full access including project deletion (only for group projects)
+#
+# RETURN VALUES:
+#   0 - Success: Member added successfully
+#   1 - Failure: Invalid parameters, user not found, or API error
+#
+# ERROR SCENARIOS:
+#   - Missing or invalid project ID
+#   - Missing or invalid GitLab PAT
+#   - User email not found in GitLab
+#   - User already a member of the project
+#   - Insufficient permissions to add members
+#   - Invalid role selection
+#   - Invalid expiry date format
+#   - Network connectivity issues
+#
+# EXAMPLES:
+#   # Add member to project by ID
+#   add_project_member "123" "$GITLAB_API_TOKEN"
+#   
+#   # Add member to project by path
+#   add_project_member "mygroup%2Fmyproject" "$GITLAB_API_TOKEN"
+#
+# SEE ALSO:
+#   remove_project_member() - Function to remove project members
+#   list_project_members() - Function to list current project members
+#   GitLab API Docs: https://docs.gitlab.com/ee/api/members.html
+#
+add_project_member() {
+    local project_id="$1"
+    local gitlab_pat="$2"
+    local gitlab_url="https://gitlab.com"
+
+    if [ -z "$project_id" ] || [ -z "$gitlab_pat" ]; then
+        echo "Usage: add_project_member <project_id> <gitlab_pat>" >&2
+        return 1
+    fi
+
+    # Interactive prompts
+    local user_email
+    local access_level
+    local expires_at
+    local user_id
+
+    echo "=== Add Member to GitLab Project ==="
+    echo
+
+    # Get user email
+    read -p "Enter user's email address: " user_email
+    if [ -z "$user_email" ]; then
+        echo "Error: Email address cannot be empty." >&2
+        return 1
+    fi
+
+    # Validate email format
+    if ! echo "$user_email" | grep -qE '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'; then
+        echo "Error: Invalid email format." >&2
+        return 1
+    fi
+
+    # Find user by email
+    echo "Looking up user by email..."
+    local user_response
+    user_response=$(curl -s --header "PRIVATE-TOKEN: $gitlab_pat" \
+                         "$gitlab_url/api/v4/users?search=$user_email")
+
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to search for user." >&2
+        return 1
+    fi
+
+    # Check if user was found
+    local user_count
+    user_count=$(echo "$user_response" | jq length 2>/dev/null)
+    
+    if [ "$user_count" -eq 0 ]; then
+        echo "Error: User with email '$user_email' not found in GitLab." >&2
+        return 1
+    fi
+
+    # Get the first matching user (should be exact match)
+    user_id=$(echo "$user_response" | jq -r '.[0].id' 2>/dev/null)
+    local username=$(echo "$user_response" | jq -r '.[0].username' 2>/dev/null)
+    local name=$(echo "$user_response" | jq -r '.[0].name' 2>/dev/null)
+
+    echo "Found user: $name (@$username)"
+    echo
+
+    # Get role selection
+    echo "Select user role:"
+    echo "1) Guest (10) - Can view project, create issues and comments"
+    echo "2) Reporter (20) - Can pull project, download artifacts, create issues/merge requests"
+    echo "3) Developer (30) - Can push to non-protected branches, manage issues/merge requests"
+    echo "4) Maintainer (40) - Can push to protected branches, manage project settings"
+    echo "5) Owner (50) - Full access including project deletion"
+    echo
+
+    local role_choice
+    read -p "Enter choice (1-5): " role_choice
+
+    case "$role_choice" in
+        1) access_level=10 ;;
+        2) access_level=20 ;;
+        3) access_level=30 ;;
+        4) access_level=40 ;;
+        5) access_level=50 ;;
+        *)
+            echo "Error: Invalid role selection." >&2
+            return 1
+            ;;
+    esac
+
+    # Get expiry date (optional)
+    echo
+    read -p "Enter expiry date (YYYY-MM-DD) or press Enter for no expiry: " expires_at
+
+    if [ -n "$expires_at" ]; then
+        # Validate date format
+        if ! echo "$expires_at" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'; then
+            echo "Error: Invalid date format. Use YYYY-MM-DD." >&2
+            return 1
+        fi
+
+        # Validate date is in the future
+        if command -v date >/dev/null 2>&1; then
+            local current_date=$(date +%Y-%m-%d)
+            if [[ "$expires_at" < "$current_date" ]]; then
+                echo "Error: Expiry date must be in the future." >&2
+                return 1
+            fi
+        fi
+    fi
+
+    # Prepare request body
+    local request_body="{\"user_id\": $user_id, \"access_level\": $access_level"
+    if [ -n "$expires_at" ]; then
+        request_body+=", \"expires_at\": \"$expires_at\""
+    fi
+    request_body+="}"
+
+    echo
+    echo "Adding member to project..."
+
+    # Make the API call
+    local http_status
+    local response
+
+    response=$(curl --request POST \
+                    --header "PRIVATE-TOKEN: $gitlab_pat" \
+                    --header "Content-Type: application/json" \
+                    --data "$request_body" \
+                    --url "$gitlab_url/api/v4/projects/$project_id/members" \
+                    --silent \
+                    --write-out "%{http_code}")
+
+    http_status=$(echo "$response" | tail -c 4)
+    response=$(echo "$response" | head -c -4)
+
+    case "$http_status" in
+        201)
+            echo "✅ Member added successfully!"
+            echo "User: $name (@$username)"
+            echo "Role: $(get_role_name $access_level)"
+            [ -n "$expires_at" ] && echo "Expires: $expires_at"
+            echo
+            echo "$response" | jq '.' 2>/dev/null || echo "$response"
+            ;;
+        409)
+            echo "⚠️  User is already a member of this project." >&2
+            echo "$response" | jq -r '.message' 2>/dev/null || echo "$response" >&2
+            return 1
+            ;;
+        400)
+            echo "❌ Bad request. Check project ID and parameters." >&2
+            echo "$response" | jq -r '.message' 2>/dev/null || echo "$response" >&2
+            return 1
+            ;;
+        401)
+            echo "❌ Unauthorized. Check your access token." >&2
+            return 1
+            ;;
+        403)
+            echo "❌ Forbidden. You don't have permission to add members to this project." >&2
+            echo "$response" | jq -r '.message' 2>/dev/null || echo "$response" >&2
+            return 1
+            ;;
+        404)
+            echo "❌ Project not found or user not found." >&2
+            echo "$response" | jq -r '.message' 2>/dev/null || echo "$response" >&2
+            return 1
+            ;;
+        *)
+            echo "❌ Error adding member to project." >&2
+            echo "HTTP Status Code: $http_status" >&2
+            echo "$response" | jq '.' 2>/dev/null || echo "$response" >&2
+            return 1
+            ;;
+    esac
+}
+
+##
+# Lists all members of a GitLab project with their roles and details.
+#
+# DESCRIPTION:
+#   This function retrieves and displays all members of a specified GitLab project,
+#   showing their names, usernames, roles, and expiry dates (if applicable). It
+#   provides multiple output formats for different use cases.
+#
+# PARAMETERS:
+#   $1 (string, required) - Project ID or project path (URL-encoded)
+#   $2 (string, required) - GitLab Personal Access Token (PAT)
+#   $3 (string, optional) - Output format: "table" (default), "json", "csv"
+#
+# OUTPUT FORMATS:
+#   table - Human-readable table format
+#   json  - Raw JSON response from GitLab API
+#   csv   - CSV format for spreadsheet import
+#
+# EXAMPLES:
+#   list_project_members "123" "$GITLAB_API_TOKEN"
+#   list_project_members "mygroup%2Fmyproject" "$GITLAB_API_TOKEN" "csv"
+#
+list_project_members() {
+    local project_id="$1"
+    local gitlab_pat="$2"
+    local output_format="${3:-table}"
+    local gitlab_url="https://gitlab.com"
+
+    if [ -z "$project_id" ] || [ -z "$gitlab_pat" ]; then
+        echo "Usage: list_project_members <project_id> <gitlab_pat> [output_format]" >&2
+        return 1
+    fi
+
+    echo "Fetching project members..." >&2
+
+    local response
+    response=$(curl -s --header "PRIVATE-TOKEN: $gitlab_pat" \
+                    "$gitlab_url/api/v4/projects/$project_id/members")
+
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to fetch project members." >&2
+        return 1
+    fi
+
+    # Check for API errors
+    local has_error
+    has_error=$(echo "$response" | jq -r 'if type=="object" and has("message") then "true" else "false" end' 2>/dev/null)
+    
+    if [ "$has_error" = "true" ]; then
+        echo "Error from GitLab API:" >&2
+        echo "$response" | jq -r '.message' >&2
+        return 1
+    fi
+
+    case "$output_format" in
+        table)
+            echo
+            printf "%-20s %-15s %-12s %-12s\n" "Name" "Username" "Role" "Expires"
+            echo "------------------------------------------------------------"
+            echo "$response" | jq -r '.[] | "\(.name // "N/A")|\(.username // "N/A")|\(.access_level)|\(.expires_at // "Never")"' | \
+            while IFS='|' read -r name username access_level expires_at; do
+                role_name=$(get_role_name "$access_level")
+                printf "%-20s %-15s %-12s %-12s\n" "$name" "$username" "$role_name" "$expires_at"
+            done
+            ;;
+        json)
+            echo "$response" | jq '.'
+            ;;
+        csv)
+            echo "name,username,access_level,role,expires_at"
+            echo "$response" | jq -r '.[] | [(.name // ""), (.username // ""), (.access_level // ""), "", (.expires_at // "")] | @csv' | \
+            while IFS=',' read -r name username access_level empty expires_at; do
+                role_name=$(get_role_name "${access_level//\"/}")
+                echo "$name,$username,$access_level,\"$role_name\",$expires_at"
+            done
+            ;;
+        *)
+            echo "Error: Invalid output format. Use table, json, or csv." >&2
+            return 1
+            ;;
+    esac
+}
+
+##
+# Removes a member from a GitLab project.
+#
+# DESCRIPTION:
+#   This function removes a member from a GitLab project by their user ID or email.
+#   It includes confirmation prompts and comprehensive error handling.
+#
+# PARAMETERS:
+#   $1 (string, required) - Project ID or project path (URL-encoded)
+#   $2 (string, required) - User email or user ID
+#   $3 (string, required) - GitLab Personal Access Token (PAT)
+#
+# EXAMPLES:
+#   remove_project_member "123" "user@example.com" "$GITLAB_API_TOKEN"
+#   remove_project_member "123" "456" "$GITLAB_API_TOKEN"
+#
+remove_project_member() {
+    local project_id="$1"
+    local user_identifier="$2"
+    local gitlab_pat="$3"
+    local gitlab_url="https://gitlab.com"
+
+    if [ -z "$project_id" ] || [ -z "$user_identifier" ] || [ -z "$gitlab_pat" ]; then
+        echo "Usage: remove_project_member <project_id> <user_email_or_id> <gitlab_pat>" >&2
+        return 1
+    fi
+
+    local user_id="$user_identifier"
+
+    # If identifier looks like an email, find the user ID
+    if echo "$user_identifier" | grep -qE '@'; then
+        echo "Looking up user by email..."
+        local user_response
+        user_response=$(curl -s --header "PRIVATE-TOKEN: $gitlab_pat" \
+                             "$gitlab_url/api/v4/users?search=$user_identifier")
+
+        if [ $? -ne 0 ]; then
+            echo "Error: Failed to search for user." >&2
+            return 1
+        fi
+
+        local user_count
+        user_count=$(echo "$user_response" | jq length 2>/dev/null)
+        
+        if [ "$user_count" -eq 0 ]; then
+            echo "Error: User with email '$user_identifier' not found." >&2
+            return 1
+        fi
+
+        user_id=$(echo "$user_response" | jq -r '.[0].id' 2>/dev/null)
+        local username=$(echo "$user_response" | jq -r '.[0].username' 2>/dev/null)
+        local name=$(echo "$user_response" | jq -r '.[0].name' 2>/dev/null)
+        
+        echo "Found user: $name (@$username)"
+    fi
+
+    # Confirmation prompt
+    echo
+    read -p "Are you sure you want to remove this member? (y/N): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "Operation cancelled."
+        return 0
+    fi
+
+    echo "Removing member from project..."
+
+    local http_status
+    local response
+
+    response=$(curl --request DELETE \
+                    --header "PRIVATE-TOKEN: $gitlab_pat" \
+                    --url "$gitlab_url/api/v4/projects/$project_id/members/$user_id" \
+                    --silent \
+                    --write-out "%{http_code}")
+
+    http_status=$(echo "$response" | tail -c 4)
+    response=$(echo "$response" | head -c -4)
+
+    case "$http_status" in
+        204)
+            echo "✅ Member removed successfully!"
+            ;;
+        404)
+            echo "❌ Member not found in project or project not found." >&2
+            return 1
+            ;;
+        401)
+            echo "❌ Unauthorized. Check your access token." >&2
+            return 1
+            ;;
+        403)
+            echo "❌ Forbidden. You don't have permission to remove members from this project." >&2
+            return 1
+            ;;
+        *)
+            echo "❌ Error removing member from project." >&2
+            echo "HTTP Status Code: $http_status" >&2
+            [ -n "$response" ] && echo "$response" >&2
+            return 1
+            ;;
+    esac
+}
+
+##
+# Helper function to convert GitLab access level numbers to role names.
+#
+# PARAMETERS:
+#   $1 (integer, required) - GitLab access level (10, 20, 30, 40, 50)
+#
+# OUTPUT:
+#   stdout - Role name corresponding to the access level
+#
+get_role_name() {
+    local access_level="$1"
+    
+    case "$access_level" in
+        10) echo "Guest" ;;
+        20) echo "Reporter" ;;
+        30) echo "Developer" ;;
+        40) echo "Maintainer" ;;
+        50) echo "Owner" ;;
+        *) echo "Unknown" ;;
+    esac
+}

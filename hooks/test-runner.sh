@@ -129,6 +129,22 @@ test_env_file_operations() {
     [ "$retrieved_value" = "test_value" ]
 }
 
+test_member_management_functions() {
+    source ./gitlab-api.sh
+    
+    # Test that member management functions are loaded
+    declare -f add_project_member list_project_members remove_project_member get_role_name >/dev/null
+}
+
+test_member_management_unit_tests() {
+    if [ -f "tests/test-member-management.sh" ]; then
+        bash tests/test-member-management.sh unit
+    else
+        log_warning "Member management test file not found, skipping"
+        return 0
+    fi
+}
+
 # ============================================================================
 # TEST EXECUTION
 # ============================================================================
@@ -155,6 +171,7 @@ run_comprehensive_tests() {
     run_test "Function Loading" "test_function_loading"
     run_test "Parameter Validation" "test_parameter_validation"
     run_test "Environment File Operations" "test_env_file_operations"
+    run_test "Member Management Functions" "test_member_management_functions"
     
     # Your specific user commands
     log_info "Testing your specific commands..."
@@ -162,6 +179,10 @@ run_comprehensive_tests() {
     run_test "get_list_of_projects (default)" "test_user_command_2"
     run_test "get_list_of_projects (csv)" "test_user_command_3"
     run_test "get_list_of_projects (json)" "test_user_command_4"
+    
+    # Member management tests
+    log_info "Testing member management features..."
+    run_test "Member Management Unit Tests" "test_member_management_unit_tests"
 }
 
 main() {
@@ -211,4 +232,3 @@ main() {
 }
 
 main "$@"
-
