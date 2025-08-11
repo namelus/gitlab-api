@@ -1,16 +1,18 @@
 #!/bin/bash
 
 # ==============================================================================
-# GitLab API Helper Script
+# GitLab API Helper Script - Enhanced Version
 # ==============================================================================
 #
 # This script provides a comprehensive set of functions for managing GitLab 
 # Personal Access Tokens (PATs) and interacting with the GitLab API.
 #
 # FEATURES:
+# - Smart token management with review and selection capabilities
 # - Secure token storage in ~/.env file with proper file permissions (600)
 # - GitLab project creation with comprehensive error handling
 # - GitLab project listing with pagination support and multiple output formats
+# - Complete project member management (add, list, remove)
 # - Cross-platform compatibility (Linux, macOS, Windows/Git Bash)
 # - Robust error handling and validation
 #
@@ -25,61 +27,360 @@
 # - Never log or echo token values to stdout
 # - Always validate input parameters before making API calls
 #
-# USAGE:
+# QUICK START:
 #   source ./gitlab-api.sh
-#   input_token "GITLAB_API_TOKEN"
-#   get_list_of_projects "$GITLAB_API_TOKEN"
+#   manage_project_members    # Complete interactive workflow
 #
 # ==============================================================================
 
-# --- TOKEN MANAGEMENT FUNCTIONS ---
+# --- ENHANCED TOKEN MANAGEMENT FUNCTIONS ---
+
+##
+# Lists all GitLab tokens found in ~/.env file that match GITLAB_*_TOKEN pattern.
+#
+# DESCRIPTION:
+#   This function searches the ~/.env file for environment variables that follow
+#   the GitLab token naming pattern: GITLAB_*_TOKEN (e.g., GITLAB_API_TOKEN, 
+#   GITLAB_GMAIL_API_TOKEN, etc.). It displays them in a user-friendly format
+#   without exposing the actual token values for security.
+#
+# PATTERN MATCHING:
+#   - Prefix: GITLAB_
+#   - Suffix: _TOKEN  
+#   - Examples: GITLAB_API_TOKEN, GITLAB_GMAIL_API_TOKEN, GITLAB_PROD_TOKEN
+#
+# OUTPUT:
+#   stdout - List of token names with preview (first 10 chars + "...")
+#   stderr - Error messages if .env file issues
+#
+# RETURN VALUES:
+#   0 - Success: Tokens found and displayed
+#   1 - Failure: No .env file or no GitLab tokens found
+#
+# SECURITY FEATURES:
+#   - Never displays full token values
+#   - Shows only first 10 characters for identification
+#   - Maintains token confidentiality while allowing selection
+#
+list_gitlab_tokens() {
+    local env_file="${HOME}/.env"
+    local count=0
+    
+    if [ ! -f "$env_file" ]; then
+        echo "Error: .env file not found at $env_file" >&2
+        return 1
+    fi
+    
+    echo "🔍 Searching for GitLab tokens in ~/.env..."
+    echo
+    
+    # Find all lines that match GITLAB_*_TOKEN pattern
+    local gitlab_tokens
+    gitlab_tokens=$(grep -E '^GITLAB_.*_TOKEN=' "$env_file" 2>/dev/null)
+    
+    if [ -z "$gitlab_tokens" ]; then
+        echo "❌ No GitLab tokens found matching pattern GITLAB_*_TOKEN"
+        echo
+        echo "💡 GitLab token naming convention:"
+        echo "   GITLAB_API_TOKEN      - General API access"
+        echo "   GITLAB_GMAIL_API_TOKEN - Gmail integration"
+        echo "   GITLAB_PROD_TOKEN     - Production environment"
+        echo "   GITLAB_DEV_TOKEN      - Development environment"
+        echo
+        return 1
+    fi
+    
+    echo "✅ Found GitLab tokens:"
+    echo
+    
+    # Process each token and display with preview
+    while IFS='=' read -r token_name token_value; do
+        if [ -n "$token_name" ] && [ -n "$token_value" ]; then
+            ((count++))
+            
+            # Remove quotes from token value if present
+            token_value=$(echo "$token_value" | sed 's/^"//; s/"$//')
+            
+            # Create preview (first 10 chars + ...)
+            local preview="${token_value:0:10}..."
+            
+            # Generate description based on token name
+            local description
+            case "$token_name" in
+                *API_TOKEN) description="(General API access)" ;;
+                *GMAIL*) description="(Gmail integration)" ;;
+                *PROD*) description="(Production environment)" ;;
+                *DEV*) description="(Development environment)" ;;
+                *TEST*) description="(Testing environment)" ;;
+                *STAGING*) description="(Staging environment)" ;;
+                *) description="(Custom token)" ;;
+            esac
+            
+            printf "%2d) %-25s - %s %s\n" "$count" "$token_name" "$preview" "$description"
+        fi
+    done <<< "$gitlab_tokens"
+    
+    echo
+    echo "📝 Total: $count GitLab token(s) found"
+    
+    return 0
+}
+
+##
+# Interactive function to select a GitLab token from available options.
+#
+# DESCRIPTION:
+#   This function presents the user with a menu of available GitLab tokens
+#   and allows them to select one for use. It combines the functionality of
+#   list_gitlab_tokens() with an interactive selection interface.
+#
+# OUTPUT:
+#   stdout - Selected token name (for use in scripts)
+#   stderr - Menu display and error messages
+#
+# RETURN VALUES:
+#   0 - Success: Token selected and returned
+#   1 - Failure: No tokens available or invalid selection
+#
+select_gitlab_token() {
+    local env_file="${HOME}/.env"
+    
+    # First, list available tokens
+    if ! list_gitlab_tokens >&2; then
+        return 1
+    fi
+    
+    # Build array of token names for selection
+    local token_names=()
+    local gitlab_tokens
+    gitlab_tokens=$(grep -E '^GITLAB_.*_TOKEN=' "$env_file" 2>/dev/null)
+    
+    while IFS='=' read -r token_name token_value; do
+        if [ -n "$token_name" ]; then
+            token_names+=("$token_name")
+        fi
+    done <<< "$gitlab_tokens"
+    
+    if [ ${#token_names[@]} -eq 0 ]; then
+        echo "Error: No tokens available for selection" >&2
+        return 1
+    fi
+    
+    # Single token - auto-select
+    if [ ${#token_names[@]} -eq 1 ]; then
+        echo "🎯 Auto-selecting the only available token: ${token_names[0]}" >&2
+        echo "${token_names[0]}"
+        return 0
+    fi
+    
+    # Multiple tokens - interactive selection
+    echo "🎯 Select a GitLab token to use:" >&2
+    echo >&2
+    
+    local choice
+    read -p "Enter choice (1-${#token_names[@]}): " choice >&2
+    
+    # Validate choice
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#token_names[@]} ]; then
+        echo "❌ Invalid choice. Please enter a number between 1 and ${#token_names[@]}" >&2
+        return 1
+    fi
+    
+    # Return selected token name (0-based array indexing)
+    local selected_token="${token_names[$((choice-1))]}"
+    echo "✅ Selected: $selected_token" >&2
+    echo "$selected_token"
+    
+    return 0
+}
+
+##
+# Enhanced token setup function that allows reviewing existing tokens or creating new ones.
+#
+# DESCRIPTION:
+#   This function replaces the simple input_token workflow with a more sophisticated
+#   approach that first checks for existing GitLab tokens and gives users options
+#   to use existing tokens or create new ones.
+#
+# PARAMETERS:
+#   $1 (string, optional) - Default token name if creating new token
+#                          Defaults to "GITLAB_API_TOKEN"
+#
+# RETURN VALUES:
+#   0 - Success: Token selected or created
+#   1 - Failure: User cancelled or error occurred
+#
+setup_gitlab_token() {
+    local default_token_name="${1:-GITLAB_API_TOKEN}"
+    
+    echo "🚀 GitLab Token Setup"
+    echo "===================="
+    echo
+    
+    # Check if we have existing tokens
+    local has_tokens=false
+    if list_gitlab_tokens >/dev/null 2>&1; then
+        has_tokens=true
+        echo
+    fi
+    
+    echo "📋 What would you like to do?"
+    echo
+    
+    if [ "$has_tokens" = true ]; then
+        echo "1) Use an existing GitLab token"
+        echo "2) Create a new GitLab token"
+        echo "3) View existing tokens again"
+        echo "4) View token usage examples"
+        echo "5) Exit without changes"
+    else
+        echo "1) Create a new GitLab token"
+        echo "2) View token usage examples"
+        echo "3) Exit without changes"
+    fi
+    
+    echo
+    local choice
+    read -p "Enter your choice: " choice
+    echo
+    
+    case "$choice" in
+        1)
+            if [ "$has_tokens" = true ]; then
+                # Use existing token
+                if selected_token=$(select_gitlab_token); then
+                    echo "🎉 Ready to use token: $selected_token"
+                    echo
+                    echo "💡 To use this token in your scripts:"
+                    echo "   token=\$(get_env_variable \"$selected_token\")"
+                    echo "   add_project_member \"PROJECT_ID\" \"\$token\""
+                    return 0
+                else
+                    echo "❌ Token selection failed"
+                    return 1
+                fi
+            else
+                # Create new token
+                input_token "$default_token_name"
+                return $?
+            fi
+            ;;
+        2)
+            if [ "$has_tokens" = true ]; then
+                # Create new token
+                echo "📝 Creating a new GitLab token..."
+                echo
+                read -p "Enter token name [$default_token_name]: " token_name
+                token_name="${token_name:-$default_token_name}"
+                
+                # Ensure it follows naming convention
+                if [[ ! "$token_name" =~ ^GITLAB_.*_TOKEN$ ]]; then
+                    echo "⚠️  Token name doesn't follow convention. Suggested: GITLAB_${token_name}_TOKEN"
+                    read -p "Use suggested name? (y/N): " use_suggested
+                    if [[ "$use_suggested" =~ ^[Yy]$ ]]; then
+                        token_name="GITLAB_${token_name}_TOKEN"
+                    fi
+                fi
+                
+                input_token "$token_name"
+                return $?
+            else
+                # View examples
+                show_token_examples
+                return 1
+            fi
+            ;;
+        3)
+            if [ "$has_tokens" = true ]; then
+                # View tokens again
+                list_gitlab_tokens
+                echo
+                setup_gitlab_token "$default_token_name"
+                return $?
+            else
+                # Exit
+                echo "👋 Exiting without changes"
+                return 1
+            fi
+            ;;
+        4)
+            if [ "$has_tokens" = true ]; then
+                # View examples
+                show_token_examples
+                echo
+                setup_gitlab_token "$default_token_name"
+                return $?
+            else
+                # Exit
+                echo "👋 Exiting without changes"
+                return 1
+            fi
+            ;;
+        5)
+            if [ "$has_tokens" = true ]; then
+                # Exit
+                echo "👋 Exiting without changes"
+                return 1
+            else
+                echo "❌ Invalid choice"
+                return 1
+            fi
+            ;;
+        *)
+            echo "❌ Invalid choice"
+            return 1
+            ;;
+    esac
+}
+
+##
+# Shows examples of GitLab token usage and naming conventions.
+#
+show_token_examples() {
+    echo "💡 GitLab Token Examples & Best Practices"
+    echo "========================================="
+    echo
+    echo "🏷️  Token Naming Convention:"
+    echo "   Pattern: GITLAB_[PURPOSE]_TOKEN"
+    echo
+    echo "   Examples:"
+    echo "   • GITLAB_API_TOKEN        - General API access"
+    echo "   • GITLAB_GMAIL_API_TOKEN  - Gmail integration"
+    echo "   • GITLAB_PROD_TOKEN       - Production environment"
+    echo "   • GITLAB_DEV_TOKEN        - Development environment"
+    echo "   • GITLAB_CI_TOKEN         - CI/CD pipeline access"
+    echo "   • GITLAB_PERSONAL_TOKEN   - Personal automation"
+    echo
+    echo "🔑 Token Scopes Needed:"
+    echo "   • read_api  - List projects and members"
+    echo "   • api       - Create projects, manage members"
+    echo
+    echo "📋 Usage Examples:"
+    echo "   # Load and use a token"
+    echo "   token=\$(get_env_variable \"GITLAB_API_TOKEN\")"
+    echo "   add_project_member \"123\" \"\$token\""
+    echo
+    echo "   # List all your tokens"
+    echo "   list_gitlab_tokens"
+    echo
+    echo "   # Interactive token selection"
+    echo "   selected=\$(select_gitlab_token)"
+    echo "   token=\$(get_env_variable \"\$selected\")"
+    echo
+    echo "🔗 Get your token at: https://gitlab.com/-/profile/personal_access_tokens"
+}
+
+# --- BASIC TOKEN MANAGEMENT FUNCTIONS ---
 
 ##
 # Prompts user for a token value and securely stores it in ~/.env file.
 #
-# DESCRIPTION:
-#   This function provides an interactive way to input and store GitLab Personal
-#   Access Tokens or other sensitive environment variables. The token is stored
-#   in a .env file in the user's home directory with restrictive permissions
-#   (600 - owner read/write only) to prevent unauthorized access.
-#
-# SECURITY FEATURES:
-#   - Creates .env file with 600 permissions if it doesn't exist
-#   - Updates existing token values without creating duplicates
-#   - Validates that token value is not empty before storing
-#   - Never echoes the actual token value to terminal
-#
 # PARAMETERS:
 #   $1 (string, required) - The name of the environment variable to store
-#                          Common examples: "GITLAB_API_TOKEN", "GITHUB_TOKEN"
 #
 # RETURN VALUES:
 #   0 - Success: Token successfully stored in ~/.env
 #   1 - Failure: Empty token value provided or file operations failed
-#
-# ERROR HANDLING:
-#   - Validates token_name parameter is provided
-#   - Ensures token value is not empty or whitespace-only
-#   - Reports file permission or write errors
-#
-# SIDE EFFECTS:
-#   - Creates ~/.env file if it doesn't exist
-#   - Sets ~/.env file permissions to 600
-#   - Updates or adds the specified environment variable
-#
-# EXAMPLES:
-#   # Store a GitLab Personal Access Token
-#   input_token "GITLAB_API_TOKEN"
-#   
-#   # Store a GitHub token
-#   input_token "GITHUB_TOKEN"
-#   
-#   # Store any environment variable
-#   input_token "MY_SECRET_KEY"
-#
-# SEE ALSO:
-#   update_env_file() - Lower-level function for programmatic updates
-#   get_env_variable() - Function to retrieve stored variables
 #
 input_token() {
     local token_name="$1"
@@ -99,69 +400,13 @@ input_token() {
 ##
 # Updates or adds a key-value pair to the ~/.env file programmatically.
 #
-# DESCRIPTION:
-#   This function provides a programmatic interface for managing environment
-#   variables in the ~/.env file. It's designed to be called by other functions
-#   or scripts that need to store configuration values securely. The function
-#   handles both creating new entries and updating existing ones atomically.
-#
-# FUNCTIONALITY:
-#   - Creates ~/.env file if it doesn't exist
-#   - Sets secure file permissions (600) on creation
-#   - Updates existing variables in-place without duplication
-#   - Appends new variables to end of file
-#   - Handles special characters in values by using double quotes
-#   - Uses sed for atomic updates to prevent corruption
-#
 # PARAMETERS:
 #   $1 (string, required) - Environment variable name
-#                          Must be a valid shell variable name (alphanumeric + underscore)
-#                          Example: "GITLAB_API_TOKEN"
-#   
 #   $2 (string, required) - Environment variable value
-#                          Can contain spaces, special characters
-#                          Will be automatically quoted in the file
-#                          Example: "glpat-xxxxxxxxxxxxxxxxxxxx"
-#
-# FILE FORMAT:
-#   The function maintains the standard .env file format:
-#   VARIABLE_NAME="variable_value"
-#   
-#   Special characters in values are preserved through double-quoting.
 #
 # RETURN VALUES:
 #   0 - Success: Variable successfully updated or added
 #   1 - Failure: File creation failed, permission issues, or sed operation failed
-#
-# ERROR SCENARIOS:
-#   - ~/.env file cannot be created (permission denied)
-#   - chmod fails to set proper permissions
-#   - sed update operation fails
-#   - Invalid variable name format
-#
-# SECURITY CONSIDERATIONS:
-#   - File permissions set to 600 (owner read/write only)
-#   - Values are properly quoted to handle special characters
-#   - Uses | delimiter in sed to avoid conflicts with URLs/tokens
-#
-# EXAMPLES:
-#   # Add or update a GitLab token
-#   update_env_file "GITLAB_API_TOKEN" "glpat-xxxxxxxxxxxxxxxxxxxx"
-#   
-#   # Store a database URL with special characters
-#   update_env_file "DATABASE_URL" "postgresql://user:pass@localhost:5432/db"
-#   
-#   # Update an existing variable
-#   update_env_file "API_ENDPOINT" "https://api.example.com/v2"
-#
-# INTEGRATION:
-#   This function is used by:
-#   - input_token() for interactive token storage
-#   - Any script needing programmatic .env management
-#
-# SEE ALSO:
-#   input_token() - Interactive wrapper for this function
-#   get_env_variable() - Function to retrieve stored variables
 #
 update_env_file() {
     local token_name="$1"
@@ -183,24 +428,8 @@ update_env_file() {
 ##
 # Retrieves and outputs an environment variable from the ~/.env file.
 #
-# DESCRIPTION:
-#   This function provides a secure method to retrieve environment variables
-#   stored in the ~/.env file. It sources the file in a controlled manner,
-#   extracts the requested variable, and outputs its value to stdout. The
-#   function includes comprehensive validation and error reporting.
-#
-# PROCESS FLOW:
-#   1. Validates that ~/.env file exists
-#   2. Sources the .env file using allexport mode
-#   3. Checks if the requested variable is set and non-empty
-#   4. Outputs the variable value to stdout
-#   5. Restores original shell export settings
-#
 # PARAMETERS:
 #   $1 (string, required) - Name of the environment variable to retrieve
-#                          Must match exactly the variable name stored in .env
-#                          Case-sensitive
-#                          Example: "GITLAB_API_TOKEN"
 #
 # OUTPUT:
 #   stdout - The value of the requested environment variable (on success)
@@ -209,51 +438,6 @@ update_env_file() {
 # RETURN VALUES:
 #   0 - Success: Variable found and value output to stdout
 #   1 - Failure: .env file not found, variable not set, or empty value
-#
-# ERROR CONDITIONS:
-#   - ~/.env file does not exist
-#   - ~/.env file exists but is not readable
-#   - Requested variable is not defined in .env file
-#   - Variable is defined but has an empty value
-#   - Shell variable expansion fails
-#
-# SECURITY FEATURES:
-#   - Uses 'set -o allexport' for controlled environment sourcing
-#   - Properly restores shell settings after operation
-#   - Does not expose other environment variables
-#   - Validates variable existence before output
-#
-# SHELL COMPATIBILITY:
-#   - Uses bash indirect variable expansion ${!variable_name}
-#   - Compatible with bash 3.0+ and most POSIX shells
-#   - Handles special characters in variable values
-#
-# EXAMPLES:
-#   # Retrieve a GitLab token
-#   token=$(get_env_variable "GITLAB_API_TOKEN")
-#   if [ $? -eq 0 ]; then
-#       echo "Token retrieved successfully"
-#   fi
-#   
-#   # Use in conditional
-#   if api_key=$(get_env_variable "API_KEY"); then
-#       curl -H "Authorization: Bearer $api_key" ...
-#   else
-#       echo "API key not found"
-#   fi
-#   
-#   # Direct usage in command substitution
-#   make_new_project "my-project" "$(get_env_variable 'GITLAB_API_TOKEN')"
-#
-# TROUBLESHOOTING:
-#   - Ensure ~/.env file exists and is readable
-#   - Verify variable name spelling and case
-#   - Check that variable has a non-empty value in .env
-#   - Confirm .env file format: VARIABLE_NAME="value"
-#
-# SEE ALSO:
-#   input_token() - Function to store variables
-#   update_env_file() - Function to programmatically update variables
 #
 get_env_variable() {
     local variable_name="$1"
@@ -281,99 +465,17 @@ get_env_variable() {
 ##
 # Creates a new GitLab project via the GitLab API with comprehensive error handling.
 #
-# DESCRIPTION:
-#   This function creates a new project in GitLab using the REST API v4. It provides
-#   detailed error handling for common scenarios including authentication failures,
-#   project name conflicts, and API rate limiting. The function returns structured
-#   JSON output on success and detailed error information on failure.
-#
-# API INTERACTION:
-#   - Endpoint: POST /api/v4/projects
-#   - Authentication: Personal Access Token (PAT) via PRIVATE-TOKEN header
-#   - Content-Type: application/json
-#   - Request Body: JSON object with project name
-#   - Response: JSON object with project details or error information
-#
 # PARAMETERS:
 #   $1 (string, required) - Project name for the new GitLab project
-#                          Must be valid GitLab project name (no spaces, special chars)
-#                          Will be used as both project name and URL slug
-#                          Example: "my-awesome-project"
-#   
 #   $2 (string, required) - GitLab Personal Access Token (PAT)
-#                          Must have 'api' scope for project creation
-#                          Format: "glpat-xxxxxxxxxxxxxxxxxxxx"
-#                          Should be kept secret and never logged
-#
-# HTTP STATUS CODES HANDLED:
-#   201 - Created: Project successfully created
-#   409 - Conflict: Project with this name already exists
-#   401 - Unauthorized: Invalid or expired token
-#   403 - Forbidden: Token lacks required permissions
-#   422 - Unprocessable Entity: Invalid project name or parameters
-#   429 - Too Many Requests: API rate limit exceeded
-#   500+ - Server Error: GitLab internal server issues
 #
 # OUTPUT:
-#   stdout (Success) - Complete JSON response from GitLab API containing:
-#                     - Project ID, name, description
-#                     - URLs (web_url, ssh_url_to_repo, http_url_to_repo)
-#                     - Timestamps, visibility level, permissions
-#   
-#   stderr (Failure) - Detailed error messages including:
-#                     - HTTP status code
-#                     - GitLab API error message (if available)
-#                     - Suggested troubleshooting steps
+#   stdout (Success) - Complete JSON response from GitLab API
+#   stderr (Failure) - Detailed error messages with troubleshooting steps
 #
 # RETURN VALUES:
 #   0 - Success: Project created successfully
 #   1 - Failure: Missing parameters, authentication error, or API error
-#
-# ERROR SCENARIOS:
-#   - Missing or empty project name
-#   - Missing or empty GitLab PAT
-#   - Project name already exists (409)
-#   - Invalid token or insufficient permissions (401/403)
-#   - Network connectivity issues
-#   - GitLab service unavailable
-#   - Invalid project name format
-#
-# SECURITY CONSIDERATIONS:
-#   - Token is passed via HTTP header (encrypted in HTTPS)
-#   - Token value is never echoed to stdout/stderr
-#   - Uses --silent flag to prevent curl from showing progress
-#   - Validates all inputs before making API call
-#
-# DEPENDENCIES:
-#   - curl: For HTTP requests to GitLab API
-#   - jq: For JSON parsing and pretty-printing
-#   - head/tail: For parsing HTTP response codes
-#
-# EXAMPLES:
-#   # Basic project creation
-#   make_new_project "my-new-project" "$GITLAB_API_TOKEN"
-#   
-#   # With error handling
-#   if make_new_project "test-project" "$GITLAB_API_TOKEN"; then
-#       echo "Project created successfully!"
-#   else
-#       echo "Failed to create project"
-#   fi
-#   
-#   # Capture project details
-#   project_json=$(make_new_project "api-client" "$GITLAB_API_TOKEN")
-#   project_id=$(echo "$project_json" | jq -r '.id')
-#
-# TROUBLESHOOTING:
-#   - Verify token has 'api' scope in GitLab settings
-#   - Check project name follows GitLab naming conventions
-#   - Ensure network connectivity to gitlab.com
-#   - Confirm token is not expired
-#   - Check GitLab API rate limits
-#
-# SEE ALSO:
-#   get_list_of_projects() - Function to list existing projects
-#   GitLab API Documentation: https://docs.gitlab.com/ee/api/projects.html
 #
 make_new_project() {
     local project_name="$1"
@@ -419,148 +521,22 @@ make_new_project() {
 ##
 # Fetches and displays GitLab projects with advanced filtering and multiple output formats.
 #
-# DESCRIPTION:
-#   This comprehensive function retrieves projects from GitLab using the REST API v4
-#   with support for multiple output formats, filtering options, and robust error
-#   handling. It's designed for both interactive use and script integration, providing
-#   flexible data presentation options for various use cases.
-#
-# API FEATURES:
-#   - Uses GitLab API v4 endpoint: GET /api/v4/projects
-#   - Supports pagination with per_page parameter (set to 100 for efficiency)
-#   - Filters to show only projects user is a member of (membership=true)
-#   - Optional filtering by last activity date and visibility level
-#   - Comprehensive error detection and reporting
-#
 # PARAMETERS:
 #   $1 (string, required) - GitLab Personal Access Token (PAT)
-#                          Must have 'read_api' or 'api' scope
-#                          Format: "glpat-xxxxxxxxxxxxxxxxxxxx"
-#   
 #   $2 (string, optional) - Output format [Default: "raw"]
-#                          Options:
-#                          - "raw": Human-readable "Name - Date" format
-#                          - "csv": CSV format with headers for spreadsheet import
-#                          - "json": Full JSON response from GitLab API
-#   
-#   $3 (string, optional) - Filter by last activity after date
-#                          Format: YYYY-MM-DD (ISO 8601 date)
-#                          Example: "2025-01-01" (shows projects active since Jan 1)
-#   
-#   $4 (string, optional) - Filter by visibility level
-#                          Options: "public", "internal", "private"
-#                          Filters projects based on their visibility setting
-#
-# OUTPUT FORMATS:
-#   
-#   RAW FORMAT (default):
-#   Project Name 1 - 2025-08-06T10:30:00.000Z
-#   Project Name 2 - 2025-08-05T15:22:00.000Z
-#   
-#   CSV FORMAT:
-#   name,last_activity_at,visibility,web_url
-#   "My Project","2025-08-06T10:30:00.000Z","private","https://gitlab.com/user/my-project"
-#   
-#   JSON FORMAT:
-#   Full GitLab API response with all project metadata
+#                          Options: "raw", "csv", "json"
+#   $3 (string, optional) - Filter by last activity after date (YYYY-MM-DD)
+#   $4 (string, optional) - Filter by visibility level ("public", "internal", "private")
 #
 # RETURN VALUES:
 #   0 - Success: Projects retrieved and displayed successfully
 #   1 - Failure: Authentication error, network issues, or invalid parameters
 #
-# ERROR HANDLING:
-#   The function detects and reports various error conditions:
-#   - Missing or invalid Personal Access Token
-#   - Network connectivity problems
-#   - GitLab API authentication failures
-#   - Invalid response format from API
-#   - Empty responses or API timeouts
-#   - Invalid output format specified
-#   - Malformed date filters
-#
-# SECURITY FEATURES:
-#   - Token transmitted securely via HTTPS headers
-#   - No token logging or exposure in output
-#   - Graceful handling of unauthorized access
-#   - Input validation for all parameters
-#
-# FILTERING CAPABILITIES:
-#   
-#   DATE FILTERING:
-#   Show only projects with activity after specific date:
-#   get_list_of_projects "$TOKEN" "raw" "2025-01-01"
-#   
-#   VISIBILITY FILTERING:
-#   Show only public projects:
-#   get_list_of_projects "$TOKEN" "csv" "" "public"
-#   
-#   COMBINED FILTERING:
-#   Show private projects active since January 1st:
-#   get_list_of_projects "$TOKEN" "json" "2025-01-01" "private"
-#
-# USE CASES:
-#   
-#   INTERACTIVE BROWSING:
-#   get_list_of_projects "$GITLAB_API_TOKEN"
-#   
-#   DATA ANALYSIS:
-#   get_list_of_projects "$GITLAB_API_TOKEN" "csv" > projects.csv
-#   
-#   AUTOMATION/SCRIPTING:
-#   projects=$(get_list_of_projects "$GITLAB_API_TOKEN" "json")
-#   project_count=$(echo "$projects" | jq length)
-#   
-#   MONITORING:
-#   get_list_of_projects "$GITLAB_API_TOKEN" "raw" "2025-08-01" > recent_projects.txt
-#
-# EXAMPLES:
-#   
-#   # Basic usage - list all your projects
-#   get_list_of_projects "$GITLAB_API_TOKEN"
-#   
-#   # Export to CSV for Excel/Sheets
-#   get_list_of_projects "$GITLAB_API_TOKEN" "csv" > my_projects.csv
-#   
-#   # Find recently active projects
-#   get_list_of_projects "$GITLAB_API_TOKEN" "raw" "2025-08-01"
-#   
-#   # Get full project data for automation
-#   projects_json=$(get_list_of_projects "$GITLAB_API_TOKEN" "json")
-#   echo "$projects_json" | jq '.[] | select(.visibility=="private") | .name'
-#   
-#   # List only public projects in CSV format
-#   get_list_of_projects "$GITLAB_API_TOKEN" "csv" "" "public"
-#
-# PERFORMANCE CONSIDERATIONS:
-#   - Uses per_page=100 to minimize API calls
-#   - Membership filter reduces response size
-#   - JSON parsing optimized for large project lists
-#   - Error detection happens early to avoid unnecessary processing
-#
-# TROUBLESHOOTING:
-#   
-#   Common Issues:
-#   - "401 Unauthorized": Check token validity and scopes
-#   - "Empty response": Verify network connectivity
-#   - "jq command not found": Install jq package
-#   - "Invalid date format": Use YYYY-MM-DD format
-#   - "No projects shown": Check membership or visibility filters
-#
-# DEPENDENCIES:
-#   - curl: HTTP client for API requests
-#   - jq: JSON processor for parsing and formatting
-#   - Standard shell utilities (echo, grep, etc.)
-#
-# SEE ALSO:
-#   make_new_project() - Function to create new projects
-#   get_list_of_projects_simple() - Simplified version for debugging
-#   GitLab API Docs: https://docs.gitlab.com/ee/api/projects.html#list-all-projects
-#
 get_list_of_projects() {
     local token="$1"
-    local output_format="${2:-raw}"           # raw, csv, or json
-    local last_activity_after="${3}"          # e.g., 2025-01-01
-    local visibility="${4}"                   # public, internal, private
+    local output_format="${2:-raw}"
+    local last_activity_after="${3}"
+    local visibility="${4}"
     local gitlab_url="https://gitlab.com"
 
     if [ -z "$token" ]; then
@@ -633,30 +609,8 @@ get_list_of_projects() {
 ##
 # Simplified project listing function for testing and debugging purposes.
 #
-# DESCRIPTION:
-#   This is a streamlined version of get_list_of_projects() designed specifically
-#   for debugging, testing, and situations where you need a quick project list
-#   without advanced filtering options. It provides a minimal, reliable way to
-#   verify API connectivity and token validity.
-#
-# DESIGN PHILOSOPHY:
-#   - Minimal complexity to reduce potential failure points
-#   - Fixed parameters to ensure consistent behavior
-#   - Clear, readable output for manual inspection
-#   - Fast execution with limited result set (10 projects max)
-#   - Optimized for troubleshooting API connection issues
-#
-# FUNCTIONALITY:
-#   - Fetches only first 10 projects (per_page=10) for quick results
-#   - Shows only projects where user is a member (membership=true)
-#   - Simple "Name - Date" output format
-#   - Basic error handling without complex validation
-#   - Direct jq processing without intermediate variables
-#
 # PARAMETERS:
 #   $1 (string, required) - GitLab Personal Access Token (PAT)
-#                          Same requirements as get_list_of_projects()
-#                          Must have 'read_api' or 'api' scope
 #
 # OUTPUT:
 #   stdout - Simple list format: "Project Name - YYYY-MM-DDTHH:MM:SS.sssZ"
@@ -665,97 +619,6 @@ get_list_of_projects() {
 # RETURN VALUES:
 #   0 - Success: Projects retrieved and displayed
 #   1 - Failure: Missing token or API error
-#
-# COMPARISON WITH FULL FUNCTION:
-#   
-#   get_list_of_projects():
-#   - Full pagination support
-#   - Multiple output formats (raw, csv, json)
-#   - Advanced filtering (date, visibility)
-#   - Comprehensive error handling
-#   - Complex validation logic
-#   
-#   get_list_of_projects_simple():
-#   - Fixed 10 project limit
-#   - Single output format
-#   - No filtering options
-#   - Basic error handling
-#   - Minimal validation
-#
-# DEBUGGING USE CASES:
-#   
-#   1. TOKEN VALIDATION:
-#      Test if your token works at all:
-#      get_list_of_projects_simple "$GITLAB_API_TOKEN"
-#   
-#   2. NETWORK CONNECTIVITY:
-#      Verify you can reach GitLab API:
-#      get_list_of_projects_simple "$GITLAB_API_TOKEN"
-#   
-#   3. JQ INSTALLATION:
-#      Check if jq is properly installed:
-#      get_list_of_projects_simple "$GITLAB_API_TOKEN"
-#   
-#   4. SHELL COMPATIBILITY:
-#      Test basic shell features work:
-#      get_list_of_projects_simple "$GITLAB_API_TOKEN"
-#
-# EXAMPLES:
-#   
-#   # Quick test of API connectivity
-#   get_list_of_projects_simple "$GITLAB_API_TOKEN"
-#   
-#   # Verify token works before complex operations
-#   if get_list_of_projects_simple "$GITLAB_API_TOKEN" > /dev/null 2>&1; then
-#       echo "Token and API working"
-#       get_list_of_projects "$GITLAB_API_TOKEN" "csv"
-#   else
-#       echo "Basic API test failed"
-#   fi
-#   
-#   # Compare with full function results
-#   echo "=== Simple Function ==="
-#   get_list_of_projects_simple "$GITLAB_API_TOKEN"
-#   echo "=== Full Function ==="
-#   get_list_of_projects "$GITLAB_API_TOKEN" "raw"
-#
-# TROUBLESHOOTING WORKFLOW:
-#   
-#   1. Start with this simple function to isolate issues
-#   2. If it fails, problem is likely:
-#      - Invalid token
-#      - Network connectivity
-#      - Missing dependencies (curl, jq)
-#      - GitLab API unavailable
-#   
-#   3. If it succeeds but full function fails, issue is likely:
-#      - Complex parameter handling
-#      - Advanced error checking logic
-#      - Filtering or formatting code
-#
-# LIMITATIONS:
-#   - Maximum 10 projects returned
-#   - No filtering capabilities
-#   - Single output format only
-#   - Minimal error reporting
-#   - No pagination support
-#
-# WHEN TO USE:
-#   - Initial API testing
-#   - Debugging connection issues
-#   - Quick project count verification
-#   - Shell script compatibility testing
-#   - Before implementing complex project operations
-#
-# WHEN NOT TO USE:
-#   - Production scripts needing all projects
-#   - Data export or analysis tasks
-#   - When specific output formats required
-#   - For large GitLab instances (>10 projects)
-#
-# SEE ALSO:
-#   get_list_of_projects() - Full-featured project listing function
-#   make_new_project() - Project creation function
 #
 get_list_of_projects_simple() {
     local token="$1"
@@ -777,63 +640,13 @@ get_list_of_projects_simple() {
 ##
 # Adds a member to a GitLab project with interactive prompts for role and expiry date.
 #
-# DESCRIPTION:
-#   This function provides an interactive way to add members to GitLab projects using
-#   their email address. It prompts for the user's role and optional expiry date,
-#   then makes the appropriate API call to add the member with comprehensive error
-#   handling and validation.
-#
-# API INTERACTION:
-#   - Endpoint: POST /api/v4/projects/{id}/members
-#   - Authentication: Personal Access Token (PAT) via PRIVATE-TOKEN header
-#   - Content-Type: application/json
-#   - Request Body: JSON object with user_id, access_level, and optional expires_at
-#
 # PARAMETERS:
 #   $1 (string, required) - Project ID or project path (URL-encoded)
-#                          Examples: "123" or "group%2Fproject-name"
-#   
 #   $2 (string, required) - GitLab Personal Access Token (PAT)
-#                          Must have 'api' scope for member management
-#                          Format: "glpat-xxxxxxxxxxxxxxxxxxxx"
-#
-# INTERACTIVE PROMPTS:
-#   1. Email Address: User's GitLab account email
-#   2. Role Selection: Choose from predefined GitLab access levels
-#   3. Expiry Date: Optional expiration date for membership
-#
-# GITLAB ACCESS LEVELS:
-#   10 - Guest: Can view project, create issues and comments
-#   20 - Reporter: Can pull project, download artifacts, create issues/merge requests
-#   30 - Developer: Can push to non-protected branches, manage issues/merge requests
-#   40 - Maintainer: Can push to protected branches, manage project settings
-#   50 - Owner: Full access including project deletion (only for group projects)
 #
 # RETURN VALUES:
 #   0 - Success: Member added successfully
 #   1 - Failure: Invalid parameters, user not found, or API error
-#
-# ERROR SCENARIOS:
-#   - Missing or invalid project ID
-#   - Missing or invalid GitLab PAT
-#   - User email not found in GitLab
-#   - User already a member of the project
-#   - Insufficient permissions to add members
-#   - Invalid role selection
-#   - Invalid expiry date format
-#   - Network connectivity issues
-#
-# EXAMPLES:
-#   # Add member to project by ID
-#   add_project_member "123" "$GITLAB_API_TOKEN"
-#   
-#   # Add member to project by path
-#   add_project_member "mygroup%2Fmyproject" "$GITLAB_API_TOKEN"
-#
-# SEE ALSO:
-#   remove_project_member() - Function to remove project members
-#   list_project_members() - Function to list current project members
-#   GitLab API Docs: https://docs.gitlab.com/ee/api/members.html
 #
 add_project_member() {
     local project_id="$1"
@@ -1010,24 +823,10 @@ add_project_member() {
 ##
 # Lists all members of a GitLab project with their roles and details.
 #
-# DESCRIPTION:
-#   This function retrieves and displays all members of a specified GitLab project,
-#   showing their names, usernames, roles, and expiry dates (if applicable). It
-#   provides multiple output formats for different use cases.
-#
 # PARAMETERS:
 #   $1 (string, required) - Project ID or project path (URL-encoded)
 #   $2 (string, required) - GitLab Personal Access Token (PAT)
 #   $3 (string, optional) - Output format: "table" (default), "json", "csv"
-#
-# OUTPUT FORMATS:
-#   table - Human-readable table format
-#   json  - Raw JSON response from GitLab API
-#   csv   - CSV format for spreadsheet import
-#
-# EXAMPLES:
-#   list_project_members "123" "$GITLAB_API_TOKEN"
-#   list_project_members "mygroup%2Fmyproject" "$GITLAB_API_TOKEN" "csv"
 #
 list_project_members() {
     local project_id="$1"
@@ -1093,18 +892,10 @@ list_project_members() {
 ##
 # Removes a member from a GitLab project.
 #
-# DESCRIPTION:
-#   This function removes a member from a GitLab project by their user ID or email.
-#   It includes confirmation prompts and comprehensive error handling.
-#
 # PARAMETERS:
 #   $1 (string, required) - Project ID or project path (URL-encoded)
 #   $2 (string, required) - User email or user ID
 #   $3 (string, required) - GitLab Personal Access Token (PAT)
-#
-# EXAMPLES:
-#   remove_project_member "123" "user@example.com" "$GITLAB_API_TOKEN"
-#   remove_project_member "123" "456" "$GITLAB_API_TOKEN"
 #
 remove_project_member() {
     local project_id="$1"
@@ -1214,3 +1005,264 @@ get_role_name() {
         *) echo "Unknown" ;;
     esac
 }
+
+# --- ENHANCED WORKFLOW FUNCTIONS ---
+
+##
+# Enhanced member management workflow that includes smart token selection.
+#
+# DESCRIPTION:
+#   This function provides a complete workflow for managing project members,
+#   including smart token selection from available GitLab tokens.
+#
+# PARAMETERS:
+#   $1 (string, optional) - Project ID. If not provided, will prompt user.
+#
+manage_project_members() {
+    local project_id="$1"
+    
+    echo "🚀 GitLab Project Member Management"
+    echo "==================================="
+    echo
+    
+    # Step 1: Select or setup token
+    echo "Step 1: Token Selection"
+    echo "----------------------"
+    
+    local selected_token
+    if ! selected_token=$(select_gitlab_token 2>/dev/null); then
+        echo "No GitLab tokens found. Let's set one up..." >&2
+        if ! setup_gitlab_token; then
+            echo "❌ Token setup failed or cancelled" >&2
+            return 1
+        fi
+        # Try again after setup
+        if ! selected_token=$(select_gitlab_token); then
+            echo "❌ Still no token available" >&2
+            return 1
+        fi
+    fi
+    
+    local token
+    token=$(get_env_variable "$selected_token")
+    
+    echo "✅ Using token: $selected_token"
+    echo
+    
+    # Step 2: Get project ID if not provided
+    if [ -z "$project_id" ]; then
+        echo "Step 2: Project Selection"
+        echo "------------------------"
+        echo "💡 First, let's see your projects:"
+        echo
+        
+        if ! get_list_of_projects_simple "$token" | head -10; then
+            echo "❌ Failed to fetch projects. Check your token permissions." >&2
+            return 1
+        fi
+        
+        echo
+        read -p "Enter Project ID or path (e.g., '123' or 'group%2Fproject'): " project_id
+        
+        if [ -z "$project_id" ]; then
+            echo "❌ Project ID is required" >&2
+            return 1
+        fi
+    fi
+    
+    echo "✅ Using project: $project_id"
+    echo
+    
+    # Step 3: Choose action
+    echo "Step 3: Choose Action"
+    echo "--------------------"
+    echo "What would you like to do?"
+    echo
+    echo "1) Add a member to the project"
+    echo "2) List current project members"
+    echo "3) Remove a member from the project"
+    echo "4) Exit"
+    echo
+    
+    local action
+    read -p "Enter your choice (1-4): " action
+    echo
+    
+    case "$action" in
+        1)
+            echo "🔄 Adding member to project $project_id..."
+            add_project_member "$project_id" "$token"
+            ;;
+        2)
+            echo "📋 Listing members of project $project_id..."
+            list_project_members "$project_id" "$token"
+            ;;
+        3)
+            echo "🗑️  Removing member from project $project_id..."
+            read -p "Enter user email or ID to remove: " user_to_remove
+            if [ -n "$user_to_remove" ]; then
+                remove_project_member "$project_id" "$user_to_remove" "$token"
+            else
+                echo "❌ User email/ID is required"
+            fi
+            ;;
+        4)
+            echo "👋 Goodbye!"
+            ;;
+        *)
+            echo "❌ Invalid choice"
+            return 1
+            ;;
+    esac
+}
+
+##
+# Smart token setup function that provides a complete workflow.
+#
+# PARAMETERS:
+#   $1 (string, optional) - Default token name if creating new token
+#                          Defaults to "GITLAB_API_TOKEN"
+#
+smart_token_setup() {
+    local default_name="${1:-GITLAB_API_TOKEN}"
+    
+    echo "🎯 Smart GitLab Token Setup"
+    echo "============================"
+    echo
+    
+    setup_gitlab_token "$default_name"
+    local result=$?
+    
+    if [ $result -eq 0 ]; then
+        echo
+        echo "✅ Token setup complete!"
+        echo
+        echo "🚀 Next steps:"
+        echo "   # Start member management workflow"
+        echo "   manage_project_members"
+        echo
+        echo "   # Or load your token manually"
+        echo "   token=\$(get_env_variable \"YOUR_TOKEN_NAME\")"
+        echo "   add_project_member \"PROJECT_ID\" \"\$token\""
+    fi
+    
+    return $result
+}
+
+# --- EXAMPLES AND HELP FUNCTIONS ---
+
+##
+# Shows the enhanced workflow examples and available functions.
+#
+show_enhanced_workflow_examples() {
+    echo "🌟 Enhanced GitLab Token & Member Management Workflow"
+    echo "===================================================="
+    echo
+    echo "🔧 New Functions Available:"
+    echo "   list_gitlab_tokens          - Show all GitLab tokens in ~/.env"
+    echo "   select_gitlab_token         - Interactive token selection" 
+    echo "   setup_gitlab_token          - Enhanced token setup with options"
+    echo "   smart_token_setup           - Complete token workflow"
+    echo "   manage_project_members      - Complete member management workflow"
+    echo
+    echo "🚀 Quick Start (Recommended):"
+    echo "   source ./gitlab-api.sh"
+    echo "   manage_project_members      # Complete interactive workflow"
+    echo
+    echo "🔍 Token Management:"
+    echo "   list_gitlab_tokens          # Review existing tokens"
+    echo "   smart_token_setup          # Setup or select tokens"
+    echo
+    echo "⚡ Advanced Usage:"
+    echo "   # Select token interactively, then use it"
+    echo "   selected=\$(select_gitlab_token)"
+    echo "   token=\$(get_env_variable \"\$selected\")"
+    echo "   add_project_member \"PROJECT_ID\" \"\$token\""
+    echo
+    echo "📊 Multiple Token Examples:"
+    echo "   You can now have multiple tokens for different purposes:"
+    echo "   • GITLAB_API_TOKEN         - General use"
+    echo "   • GITLAB_GMAIL_API_TOKEN   - Gmail integration"  
+    echo "   • GITLAB_PROD_TOKEN        - Production environment"
+    echo "   • GITLAB_DEV_TOKEN         - Development environment"
+    echo
+    echo "🎯 Token Naming Convention:"
+    echo "   Pattern: GITLAB_[PURPOSE]_TOKEN"
+    echo "   Examples: GITLAB_CI_TOKEN, GITLAB_PERSONAL_TOKEN"
+    echo
+    echo "🔗 Get tokens at: https://gitlab.com/-/profile/personal_access_tokens"
+}
+
+##
+# Shows usage examples for all major functions.
+#
+show_usage_examples() {
+    echo "📚 GitLab API Script - Usage Examples"
+    echo "====================================="
+    echo
+    echo "🚀 QUICK START:"
+    echo "   source ./gitlab-api.sh"
+    echo "   manage_project_members      # Complete interactive workflow"
+    echo
+    echo "🔑 TOKEN MANAGEMENT:"
+    echo "   # List existing GitLab tokens"
+    echo "   list_gitlab_tokens"
+    echo
+    echo "   # Interactive token selection"
+    echo "   selected=\$(select_gitlab_token)"
+    echo "   token=\$(get_env_variable \"\$selected\")"
+    echo
+    echo "   # Create new token"
+    echo "   smart_token_setup \"GITLAB_MY_TOKEN\""
+    echo
+    echo "📁 PROJECT OPERATIONS:"
+    echo "   # Create new project"
+    echo "   token=\$(get_env_variable \"GITLAB_API_TOKEN\")"
+    echo "   make_new_project \"my-awesome-project\" \"\$token\""
+    echo
+    echo "   # List projects (various formats)"
+    echo "   get_list_of_projects \"\$token\"                    # Simple list"
+    echo "   get_list_of_projects \"\$token\" \"csv\"             # CSV format"
+    echo "   get_list_of_projects \"\$token\" \"json\"            # Full JSON"
+    echo "   get_list_of_projects \"\$token\" \"raw\" \"2025-01-01\" # Active since date"
+    echo
+    echo "👥 MEMBER MANAGEMENT:"
+    echo "   # Add member (interactive)"
+    echo "   add_project_member \"123\" \"\$token\""
+    echo
+    echo "   # List members"
+    echo "   list_project_members \"123\" \"\$token\"            # Table format"
+    echo "   list_project_members \"123\" \"\$token\" \"csv\"     # CSV format"
+    echo
+    echo "   # Remove member"
+    echo "   remove_project_member \"123\" \"user@email.com\" \"\$token\""
+    echo
+    echo "🛠️  UTILITY FUNCTIONS:"
+    echo "   # Get simple project list (debugging)"
+    echo "   get_list_of_projects_simple \"\$token\""
+    echo
+    echo "   # Manual token storage"
+    echo "   input_token \"GITLAB_CUSTOM_TOKEN\""
+    echo
+    echo "   # Retrieve stored token"
+    echo "   my_token=\$(get_env_variable \"GITLAB_API_TOKEN\")"
+}
+
+# --- INITIALIZATION ---
+
+# Display welcome message when script is sourced
+if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
+    echo "✅ Enhanced GitLab API Helper Script loaded!"
+    echo
+    echo "🚀 Quick Start:"
+    echo "   manage_project_members      # Complete interactive workflow"
+    echo
+    echo "📚 Help & Examples:"
+    echo "   show_enhanced_workflow_examples    # Show new features"
+    echo "   show_usage_examples               # Show all examples"
+    echo "   show_token_examples               # Token best practices"
+    echo
+    echo "🔍 Token Management:"
+    echo "   list_gitlab_tokens         # Review existing tokens"
+    echo "   smart_token_setup         # Setup new tokens"
+fi
