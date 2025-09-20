@@ -1248,6 +1248,507 @@ show_usage_examples() {
     echo "   my_token=\$(get_env_variable \"GITLAB_API_TOKEN\")"
 }
 
+# --- GIT REPOSITORY CREATION FUNCTIONS ---
+
+##
+# Creates a complete GitLab repository from the current folder.
+#
+# DESCRIPTION:
+#   This function provides a complete workflow to turn the current folder into
+#   a GitLab repository. It creates the GitLab project, initializes local Git
+#   repository (if needed), adds the remote, and pushes the code.
+#
+# PARAMETERS:
+#   $1 (string, required) - Project name for the new GitLab project
+#   $2 (string, optional) - GitLab Personal Access Token (if not provided, will auto-detect)
+#   $3 (string, optional) - Project description
+#   $4 (string, optional) - Visibility level ("private", "internal", "public")
+#   $5 (string, optional) - Initial branch name (default: "main")
+#
+# RETURN VALUES:
+#   0 - Success: Repository created and code pushed
+#   1 - Failure: Missing parameters, Git issues, or API errors
+#
+create_gitlab_repository_from_folder() {
+    local project_name="$1"
+    local gitlab_pat="$2"
+    local project_description="${3:-Created from local folder via GitLab API Helper}"
+    local visibility="${4:-private}"
+    local initial_branch="${5:-main}"
+    
+    if [ -z "$project_name" ]; then
+        echo "Usage: create_gitlab_repository_from_folder <project_name> [gitlab_pat] [description] [visibility] [initial_branch]" >&2
+        return 1
+    fi
+    
+    echo "🚀 Creating GitLab Repository from Current Folder"
+    echo "================================================="
+    echo "Project: $project_name"
+    echo "Description: $project_description"
+    echo "Visibility: $visibility"
+    echo "Initial Branch: $initial_branch"
+    echo
+    
+    # Step 1: Auto-detect token if not provided
+    if [ -z "$gitlab_pat" ]; then
+        echo "Step 1: Detecting GitLab token..."
+        if ! gitlab_pat=$(detect_active_gitlab_token 2>/dev/null); then
+            echo "Error: No GitLab token found. Please provide one or set up tokens first." >&2
+            return 1
+        fi
+        echo "✅ Using token: $gitlab_pat"
+    else
+        echo "Step 1: Using provided GitLab token"
+    fi
+    echo
+    
+    # Step 2: Check if project already exists
+    echo "Step 2: Checking if project already exists..."
+    if check_project_exists "$project_name" >/dev/null 2>&1; then
+        echo "❌ Project '$project_name' already exists!" >&2
+        echo "💡 Use a different name or check existing projects with: list_gitlab_tokens" >&2
+        return 1
+    fi
+    echo "✅ Project name is available"
+    echo
+    
+    # Step 3: Create GitLab project
+    echo "Step 3: Creating GitLab project..."
+    local project_data
+    if ! project_data=$(create_gitlab_project_with_options "$project_name" "$gitlab_pat" "$project_description" "$visibility"); then
+        echo "❌ Failed to create GitLab project" >&2
+        return 1
+    fi
+    
+    # Extract project details
+    local project_id
+    local project_url
+    local ssh_url
+    project_id=$(echo "$project_data" | jq -r '.id')
+    project_url=$(echo "$project_data" | jq -r '.web_url')
+    ssh_url=$(echo "$project_data" | jq -r '.ssh_url_to_repo')
+    
+    echo "✅ GitLab project created successfully!"
+    echo "   Project ID: $project_id"
+    echo "   Project URL: $project_url"
+    echo "   SSH URL: $ssh_url"
+    echo
+    
+    # Step 4: Initialize local Git repository
+    echo "Step 4: Setting up local Git repository..."
+    if ! setup_local_git_repository "$ssh_url" "$initial_branch"; then
+        echo "❌ Failed to set up local Git repository" >&2
+        return 1
+    fi
+    echo "✅ Local Git repository configured"
+    echo
+    
+    # Step 5: Push code to GitLab
+    echo "Step 5: Pushing code to GitLab..."
+    if ! push_to_gitlab "$initial_branch"; then
+        echo "❌ Failed to push code to GitLab" >&2
+        return 1
+    fi
+    echo "✅ Code pushed to GitLab successfully!"
+    echo
+    
+    # Step 6: Show final status
+    echo "🎉 Repository Creation Complete!"
+    echo "================================"
+    echo "Project Name: $project_name"
+    echo "Project URL: $project_url"
+    echo "SSH Clone URL: $ssh_url"
+    echo "Local Branch: $initial_branch"
+    echo
+    echo "Next steps:"
+    echo "  • Visit: $project_url"
+    echo "  • Clone elsewhere: git clone $ssh_url"
+    echo "  • Continue development: git add . && git commit -m 'Update' && git push"
+    echo
+    
+    return 0
+}
+
+##
+# Creates a GitLab project with additional options like description and visibility.
+#
+# PARAMETERS:
+#   $1 (string, required) - Project name
+#   $2 (string, required) - GitLab Personal Access Token
+#   $3 (string, optional) - Project description
+#   $4 (string, optional) - Visibility level ("private", "internal", "public")
+#
+# OUTPUT:
+#   stdout - Complete JSON response from GitLab API
+#   stderr - Error messages
+#
+# RETURN VALUES:
+#   0 - Success: Project created
+#   1 - Failure: API error or invalid parameters
+#
+create_gitlab_project_with_options() {
+    local project_name="$1"
+    local gitlab_pat="$2"
+    local project_description="${3:-Created via GitLab API Helper}"
+    local visibility="${4:-private}"
+    local gitlab_url="https://gitlab.com"
+    
+    if [ -z "$project_name" ] || [ -z "$gitlab_pat" ]; then
+        echo "Usage: create_gitlab_project_with_options <project_name> <gitlab_pat> [description] [visibility]" >&2
+        return 1
+    fi
+    
+    # Validate visibility level
+    case "$visibility" in
+        private|internal|public) ;;
+        *)
+            echo "Error: Invalid visibility level '$visibility'. Use: private, internal, or public" >&2
+            return 1
+            ;;
+    esac
+    
+    echo "Creating project '$project_name' with visibility '$visibility'..."
+    
+    # Prepare request body
+    local request_body
+    request_body=$(jq -n \
+        --arg name "$project_name" \
+        --arg description "$project_description" \
+        --arg visibility "$visibility" \
+        '{name: $name, description: $description, visibility: $visibility}')
+    
+    local http_status
+    local response
+    
+    response=$(curl --request POST \
+                    --header "PRIVATE-TOKEN: $gitlab_pat" \
+                    --header "Content-Type: application/json" \
+                    --data "$request_body" \
+                    --url "$gitlab_url/api/v4/projects" \
+                    --silent \
+                    --write-out "%{http_code}")
+    
+    http_status=$(echo "$response" | tail -c 4)
+    response=$(echo "$response" | head -c -4)
+    
+    if [ "$http_status" == "201" ]; then
+        echo "Project '$project_name' created successfully."
+        echo "$response" | jq '.'
+    elif [ "$http_status" == "409" ]; then
+        echo "Error: Project '$project_name' already exists." >&2
+        echo "$response" | jq '.' >&2
+        return 1
+    else
+        echo "Error creating project '$project_name'." >&2
+        echo "HTTP Status Code: $http_status" >&2
+        echo "$response" | jq '.' >&2
+        return 1
+    fi
+}
+
+##
+# Sets up local Git repository and configures remote.
+#
+# PARAMETERS:
+#   $1 (string, required) - GitLab SSH URL
+#   $2 (string, optional) - Initial branch name (default: "main")
+#
+# RETURN VALUES:
+#   0 - Success: Git repository configured
+#   1 - Failure: Git operations failed
+#
+setup_local_git_repository() {
+    local ssh_url="$1"
+    local initial_branch="${2:-main}"
+    
+    if [ -z "$ssh_url" ]; then
+        echo "Usage: setup_local_git_repository <ssh_url> [initial_branch]" >&2
+        return 1
+    fi
+    
+    # Check if git is available
+    if ! command -v git >/dev/null 2>&1; then
+        echo "Error: Git is not installed or not in PATH" >&2
+        return 1
+    fi
+    
+    # Initialize git repository if not already one
+    if ! git rev-parse --git-dir >/dev/null 2>&1; then
+        echo "Initializing Git repository..."
+        if ! git init; then
+            echo "Error: Failed to initialize Git repository" >&2
+            return 1
+        fi
+    else
+        echo "Git repository already initialized"
+    fi
+    
+    # Add remote if not already added
+    if ! git remote get-url origin >/dev/null 2>&1; then
+        echo "Adding GitLab remote..."
+        if ! git remote add origin "$ssh_url"; then
+            echo "Error: Failed to add GitLab remote" >&2
+            return 1
+        fi
+    else
+        echo "Updating GitLab remote..."
+        if ! git remote set-url origin "$ssh_url"; then
+            echo "Error: Failed to update GitLab remote" >&2
+            return 1
+        fi
+    fi
+    
+    # Set default branch name
+    echo "Setting default branch to '$initial_branch'..."
+    if ! git config --local init.defaultBranch "$initial_branch"; then
+        echo "Warning: Failed to set default branch name" >&2
+    fi
+    
+    # Create initial commit if no commits exist
+    if ! git rev-parse HEAD >/dev/null 2>&1; then
+        echo "Creating initial commit..."
+        
+        # Add all files
+        if ! git add .; then
+            echo "Error: Failed to add files to Git" >&2
+            return 1
+        fi
+        
+        # Create initial commit
+        if ! git commit -m "Initial commit: $project_name
+
+Created via GitLab API Helper
+- Project: $project_name
+- Created: $(date)
+- Description: $project_description"; then
+            echo "Error: Failed to create initial commit" >&2
+            return 1
+        fi
+    else
+        echo "Repository already has commits"
+    fi
+    
+    return 0
+}
+
+##
+# Pushes code to GitLab repository.
+#
+# PARAMETERS:
+#   $1 (string, optional) - Branch name to push (default: "main")
+#
+# RETURN VALUES:
+#   0 - Success: Code pushed to GitLab
+#   1 - Failure: Git push failed
+#
+push_to_gitlab() {
+    local branch="${1:-main}"
+    
+    # Check if we're in a git repository
+    if ! git rev-parse --git-dir >/dev/null 2>&1; then
+        echo "Error: Not in a Git repository" >&2
+        return 1
+    fi
+    
+    # Check if remote exists
+    if ! git remote get-url origin >/dev/null 2>&1; then
+        echo "Error: No Git remote 'origin' found" >&2
+        return 1
+    fi
+    
+    echo "Pushing code to GitLab..."
+    
+    # Push to GitLab
+    if ! git push -u origin "$branch"; then
+        echo "Error: Failed to push to GitLab" >&2
+        echo "💡 Make sure you have push access to the repository" >&2
+        echo "💡 Check your SSH keys are configured for GitLab" >&2
+        return 1
+    fi
+    
+    echo "✅ Code successfully pushed to GitLab!"
+    return 0
+}
+
+##
+# Detects the active GitLab token based on current context.
+#
+# DESCRIPTION:
+#   This function intelligently selects the best GitLab token based on:
+#   - Current git branch (dev -> GITLAB_DEV_TOKEN, main -> GITLAB_PROD_TOKEN)
+#   - Available tokens in ~/.env
+#   - Token naming conventions
+#
+# OUTPUT:
+#   stdout - Selected token name (e.g., "GITLAB_API_TOKEN")
+#   stderr - Detection process information
+#
+# RETURN VALUES:
+#   0 - Success: Token detected and returned
+#   1 - Failure: No suitable token found
+#
+detect_active_gitlab_token() {
+    local env_file="${HOME}/.env"
+    
+    if [ ! -f "$env_file" ]; then
+        echo "Error: .env file not found at $env_file" >&2
+        return 1
+    fi
+    
+    # Get current git branch if available
+    local current_branch=""
+    if git rev-parse --git-dir >/dev/null 2>&1; then
+        current_branch=$(git branch --show-current 2>/dev/null || echo "")
+    fi
+    
+    echo "🔍 Detecting active GitLab token..." >&2
+    echo "📋 Current branch: ${current_branch:-'not in git repo'}" >&2
+    
+    # Find all GitLab tokens
+    local gitlab_tokens
+    gitlab_tokens=$(grep -E '^GITLAB_.*_TOKEN=' "$env_file" 2>/dev/null)
+    
+    if [ -z "$gitlab_tokens" ]; then
+        echo "Error: No GitLab tokens found in ~/.env" >&2
+        return 1
+    fi
+    
+    # Priority-based token selection
+    local selected_token=""
+    
+    # 1. Branch-specific tokens (highest priority)
+    if [ -n "$current_branch" ]; then
+        case "$current_branch" in
+            main|master|production|prod)
+                selected_token=$(echo "$gitlab_tokens" | grep "GITLAB_PROD_TOKEN=" | head -1 | cut -d'=' -f1)
+                [ -n "$selected_token" ] && echo "🎯 Selected production token for '$current_branch' branch" >&2
+                ;;
+            develop|dev|development)
+                selected_token=$(echo "$gitlab_tokens" | grep "GITLAB_DEV_TOKEN=" | head -1 | cut -d'=' -f1)
+                [ -n "$selected_token" ] && echo "🎯 Selected development token for '$current_branch' branch" >&2
+                ;;
+        esac
+    fi
+    
+    # 2. General API token (fallback)
+    if [ -z "$selected_token" ]; then
+        selected_token=$(echo "$gitlab_tokens" | grep "GITLAB_API_TOKEN=" | head -1 | cut -d'=' -f1)
+        [ -n "$selected_token" ] && echo "🎯 Selected general API token" >&2
+    fi
+    
+    # 3. Any GitLab token (last resort)
+    if [ -z "$selected_token" ]; then
+        selected_token=$(echo "$gitlab_tokens" | head -1 | cut -d'=' -f1)
+        [ -n "$selected_token" ] && echo "🎯 Selected first available token" >&2
+    fi
+    
+    if [ -z "$selected_token" ]; then
+        echo "Error: No suitable GitLab token found" >&2
+        return 1
+    fi
+    
+    echo "✅ Auto-detected token: $selected_token" >&2
+    echo "$selected_token"
+    return 0
+}
+
+##
+# Detects the current GitLab project from git remote.
+#
+# DESCRIPTION:
+#   This function parses the git remote URL to determine the current GitLab project
+#   and looks it up in the projects cache for additional metadata.
+#
+# OUTPUT:
+#   stdout - Project ID (e.g., "12345")
+#   stderr - Detection process information
+#
+# RETURN VALUES:
+#   0 - Success: Project detected and ID returned
+#   1 - Failure: Not in GitLab repo or project not found
+#
+detect_current_project() {
+    # Check if we're in a git repository
+    if ! git rev-parse --git-dir >/dev/null 2>&1; then
+        echo "Error: Not in a Git repository" >&2
+        return 1
+    fi
+    
+    # Get git remote URL
+    local remote_url
+    if ! remote_url=$(git remote get-url origin 2>/dev/null); then
+        echo "Error: No git remote 'origin' found" >&2
+        return 1
+    fi
+    
+    echo "🔍 Auto-detecting current project..." >&2
+    echo "📡 Git remote URL: $remote_url" >&2
+    
+    # Parse project path from URL
+    local project_path=""
+    case "$remote_url" in
+        *gitlab.com*)
+            if [[ "$remote_url" =~ gitlab\.com[:/]([^/]+/[^/]+) ]]; then
+                project_path="${BASH_REMATCH[1]}"
+                project_path="${project_path%.git}"
+                echo "📁 Detected project path: $project_path" >&2
+            fi
+            ;;
+        *gitlab*)
+            echo "🏢 Custom GitLab instance detected" >&2
+            # Try to extract path from custom GitLab URL
+            if [[ "$remote_url" =~ /([^/]+/[^/]+)\.git$ ]]; then
+                project_path="${BASH_REMATCH[1]}"
+                echo "📁 Detected project path: $project_path" >&2
+            fi
+            ;;
+        *)
+            echo "Error: Remote doesn't appear to be GitLab" >&2
+            return 1
+            ;;
+    esac
+    
+    if [ -z "$project_path" ]; then
+        echo "Error: Could not parse project path from remote URL" >&2
+        return 1
+    fi
+    
+    # Look up project in cache if available
+    if command -v get_cache_file_path >/dev/null 2>&1; then
+        local cache_file
+        cache_file=$(get_cache_file_path)
+        
+        if [ -f "$cache_file" ] && command -v jq >/dev/null 2>&1; then
+            echo "🗄️  Looking up project in cache..." >&2
+            local project_info
+            project_info=$(jq -r --arg path "$project_path" '
+                .[] | select(.path_with_namespace == $path) |
+                {id: .id, name: .name, path: .path_with_namespace}
+            ' "$cache_file" 2>/dev/null | head -1)
+            
+            if [ -n "$project_info" ] && [ "$project_info" != "null" ]; then
+                local project_id
+                project_id=$(echo "$project_info" | jq -r '.id')
+                local project_name
+                project_name=$(echo "$project_info" | jq -r '.name')
+                echo "✅ Found project in cache!" >&2
+                echo "📛 Project Name: $project_name" >&2
+                echo "🆔 Project ID: $project_id" >&2
+                echo "$project_id"
+                return 0
+            else
+                echo "⚠️  Project not found in cache" >&2
+                echo "💡 Try refreshing cache: init_project_cache \"\$GITLAB_API_TOKEN\"" >&2
+            fi
+        fi
+    fi
+    
+    # Fallback: try to extract project ID from URL or use path as-is
+    echo "⚠️  Using project path as fallback: $project_path" >&2
+    echo "$project_path"
+    return 0
+}
+
 # --- INITIALIZATION ---
 
 # Display welcome message when script is sourced
@@ -1255,6 +1756,7 @@ if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
     echo "✅ Enhanced GitLab API Helper Script loaded!"
     echo
     echo "🚀 Quick Start:"
+    echo "   create_gitlab_repository_from_folder \"my-project\"  # Create repo from current folder"
     echo "   manage_project_members      # Complete interactive workflow"
     echo
     echo "📚 Help & Examples:"
@@ -1265,4 +1767,9 @@ if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
     echo "🔍 Token Management:"
     echo "   list_gitlab_tokens         # Review existing tokens"
     echo "   smart_token_setup         # Setup new tokens"
+    echo
+    echo "🆕 Git Repository Creation:"
+    echo "   create_gitlab_repository_from_folder \"project-name\"  # Full workflow"
+    echo "   detect_active_gitlab_token  # Auto-detect best token"
+    echo "   detect_current_project     # Detect current GitLab project"
 fi

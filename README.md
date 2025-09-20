@@ -1,6 +1,22 @@
 # GitLab API Helper Library
 
-A comprehensive Bash library for securely managing GitLab Personal Access Tokens and interacting with the GitLab REST API v4. This library provides robust token management, project creation, project listing capabilities, and **advanced local project caching** with cross-platform compatibility.
+A comprehensive Bash library for securely managing GitLab Personal Access Tokens and interacting with the GitLab REST API v4. This library provides robust token management, project creation, project listing capabilities, **advanced local project caching**, and **complete Git repository creation** with cross-platform compatibility.
+
+> **🚀 v2.1.0 Now Available!** Turn any local folder into a GitLab repository with one command. [See Release Notes](RELEASE_NOTES_v2.1.0.md) for details.
+
+## ⚡ Quick Start
+
+```bash
+# Install system-wide
+bash scripts/install-system-wide.sh
+
+# Create GitLab repository from current folder
+gitlab-create-repo "my-awesome-project"
+
+# Or use in scripts
+source ./gitlab-api.sh
+create_gitlab_repository_from_folder "my-project"
+```
 
 ## 🚀 Features
 
@@ -8,6 +24,9 @@ A comprehensive Bash library for securely managing GitLab Personal Access Tokens
 - **Secure Token Management**: Store and retrieve GitLab PATs with proper file permissions
 - **Project Operations**: Create new projects with comprehensive error handling
 - **Advanced Project Listing**: List projects with filtering, pagination, and multiple output formats
+- **🆕 Complete Git Repository Creation**: Turn any local folder into a GitLab repository
+- **🆕 Smart Token Detection**: Auto-detect the best GitLab token based on git branch
+- **🆕 Project Detection**: Automatically detect current GitLab project from git remote
 - **Cross-Platform Support**: Works on Linux, macOS, and Windows (Git Bash/WSL)
 - **Robust Error Handling**: Detailed error messages and troubleshooting guidance
 - **Multiple Output Formats**: Raw text, CSV, and JSON output options
@@ -135,7 +154,16 @@ init_project_cache "$token"
 # 📁 Cache location: /Users/you/.local/share/gitlab-api-helper/projects-cache.json
 ```
 
-### 3. Use Cache Features
+### 3. Create GitLab Repository from Current Folder
+```bash
+# Complete workflow: Create GitLab repo from current folder
+create_gitlab_repository_from_folder "my-awesome-project"
+
+# With custom options
+create_gitlab_repository_from_folder "my-project" "glpat-token" "Project description" "private" "main"
+```
+
+### 4. Use Cache Features
 ```bash
 # Check if a project already exists before creating
 check_project_exists "my-new-project"
@@ -168,11 +196,50 @@ Programmatically updates or adds environment variables to ~/.env file.
 #### `make_new_project(project_name, gitlab_pat)`
 Creates a new project in GitLab with comprehensive error handling.
 
+#### `create_gitlab_project_with_options(project_name, gitlab_pat, [description], [visibility])`
+Creates a GitLab project with additional options like description and visibility.
+
 #### `get_list_of_projects(gitlab_pat, [format], [date_filter], [visibility])`
 Lists GitLab projects with advanced filtering and multiple output formats.
 
 #### `get_list_of_projects_simple(gitlab_pat)`
 Simplified project listing for debugging and testing.
+
+### 🆕 **Git Repository Creation Functions**
+
+#### `create_gitlab_repository_from_folder(project_name, [gitlab_pat], [description], [visibility], [initial_branch])`
+Complete workflow to turn current folder into a GitLab repository.
+```bash
+# Basic usage
+create_gitlab_repository_from_folder "my-project"
+
+# With all options
+create_gitlab_repository_from_folder "my-project" "glpat-token" "Description" "private" "main"
+```
+
+#### `setup_local_git_repository(ssh_url, [initial_branch])`
+Sets up local Git repository and configures remote.
+```bash
+setup_local_git_repository "git@gitlab.com:user/project.git" "main"
+```
+
+#### `push_to_gitlab([branch])`
+Pushes code to GitLab repository.
+```bash
+push_to_gitlab "main"
+```
+
+#### `detect_active_gitlab_token()`
+Auto-detects the best GitLab token based on current git branch.
+```bash
+token=$(detect_active_gitlab_token)
+```
+
+#### `detect_current_project()`
+Detects current GitLab project from git remote.
+```bash
+project_id=$(detect_current_project)
+```
 
 ### 🗄️ **New: Cache Management Functions**
 
@@ -239,6 +306,24 @@ search_projects_advanced "" "public" "2025-07-01" "2025-07-31" "csv"
 - `clear_cache()` - Clear all cache data
 
 ## 💼 Usage Examples
+
+### 🆕 Complete GitLab Repository Creation
+```bash
+#!/bin/bash
+
+# Load the libraries
+source ./gitlab-api.sh
+source ./gitlab-project-cache.sh
+
+# Set up token (first time only)
+input_token "GITLAB_API_TOKEN"
+
+# Create GitLab repository from current folder
+create_gitlab_repository_from_folder "my-awesome-project"
+
+# Or with custom options
+create_gitlab_repository_from_folder "my-project" "glpat-token" "My project description" "private" "main"
+```
 
 ### Basic Cache Workflow
 ```bash
@@ -345,7 +430,34 @@ find_projects_updated_since "2025-08-01" "full" > recent_projects.json
 generate_activity_report 60 > activity_report.txt
 ```
 
-## 🚀 **Interactive Mode**
+## 🚀 **System-Wide Installation**
+
+Install the GitLab API Helper system-wide for easy access:
+```bash
+# Install with tests
+bash scripts/install-system-wide.sh
+
+# Force install (skip tests)
+bash scripts/install-system-wide.sh --force
+
+# Test only (no installation)
+bash scripts/install-system-wide.sh --test-only
+
+# Uninstall
+bash scripts/install-system-wide.sh --uninstall
+```
+
+After installation, use these commands from anywhere:
+```bash
+gitlab-create-repo "my-project"           # Create GitLab repo from current folder
+gitlab-manage-members                     # Manage project members
+gitlab-list-projects                      # List GitLab projects
+gitlab-token-setup                        # Set up GitLab tokens
+gitlab-cache-init                         # Initialize project cache
+gitlab-interactive                        # Interactive project explorer
+```
+
+## 🎯 **Interactive Mode**
 
 Launch the interactive project explorer:
 ```bash
@@ -610,7 +722,34 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📈 Changelog
 
-### v2.0.0 (Current)
+### v2.1.0 (Current) - GitLab Repository Creation System
+- **🆕 Complete Git Repository Creation**
+  - Turn any local folder into a GitLab repository with one command
+  - Smart token detection based on git branch context
+  - Automatic project detection from git remote URLs
+  - Complete Git workflow (init, remote, push) with error handling
+  - System-wide installation with CLI wrapper scripts
+  - Comprehensive unit and integration testing suite
+  - Enhanced error handling and validation
+
+- **🧪 Testing & Quality**
+  - Unit tests covering all new functions (success, failure, edge cases)
+  - Integration tests for full end-to-end workflow validation
+  - Mock implementations for isolated testing
+  - Comprehensive error scenario coverage
+
+- **⚙️ System-Wide Installation**
+  - `scripts/install-system-wide.sh` - Tested installer with uninstall option
+  - CLI tools: `gitlab-create-repo`, `gitlab-manage-members`, `gitlab-list-projects`, `gitlab-token-setup`, `gitlab-cache-init`, `gitlab-interactive`
+  - Automatic PATH configuration and shell integration
+
+- **📚 Documentation & Examples**
+  - Updated README.md with new usage guides and examples
+  - Demo script: `examples/git-repository-creation-demo.sh`
+  - Complete function reference with code examples
+  - Prerequisites and setup instructions
+
+### v2.0.0 - Project Cache System
 - **🆕 Added GitLab Project Cache System**
   - Local project caching in AppData folder
   - Duplicate prevention for project creation
@@ -623,13 +762,17 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
   - Interactive project explorer
   - Comprehensive integration examples
 
-### v1.0.0
-- Initial release
-- Token management functions
-- Project creation and listing
-- Multiple output formats
-- Cross-platform support
-- Comprehensive documentation
+### v1.0.0 - Initial Release
+- **Core API Features**
+  - Token management functions
+  - Project creation and listing
+  - Multiple output formats
+  - Cross-platform support
+  - Comprehensive documentation
+
+---
+
+**📋 Full Changelog:** See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
 
 ## 🎉 **New in v2.0: Cache System Benefits**
 

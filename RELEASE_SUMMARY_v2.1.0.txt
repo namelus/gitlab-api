@@ -1,0 +1,26 @@
+v2.1.0 - GitLab Repository Creation System
+
+Add full repo creation workflow: local folder → GitLab repo (with tests & installer)
+
+✨ New Features:
+- create_gitlab_repository_from_folder() - Complete workflow
+- Smart token detection based on git branch
+- System-wide installation with CLI tools
+- Comprehensive testing suite
+
+🧪 Testing:
+- Unit tests for all new functions
+- Integration tests for end-to-end workflows
+- Mock implementations for isolated testing
+
+⚙️ Installation:
+- scripts/install-system-wide.sh - Tested installer
+- CLI tools: gitlab-create-repo, gitlab-manage-members, etc.
+- Automatic PATH configuration
+
+📚 Documentation:
+- Updated README.md with usage guides
+- Demo script and examples
+- Complete function reference
+
+One command now turns any folder into a GitLab repository!

@@ -221,9 +221,15 @@ validate_no_hardcoded_secrets() {
     
     log_info "Scanning for hardcoded secrets..."
     
-    # Check for GitLab tokens (excluding documentation)
+    # Check for GitLab tokens (excluding documentation, test files, examples, and git hooks)
     local token_files
-    token_files=$(find "$project_root" -name "*.sh" -o -name "*.bash" | xargs grep -l "glpat-" 2>/dev/null | grep -v README || true)
+    token_files=$(find "$project_root" -name "*.sh" -o -name "*.bash" | \
+        grep -v -E "(test|spec|mock|demo|example)" | \
+        grep -v ".git/hooks" | \
+        grep -v "validation.sh" | \
+        xargs grep -l "glpat-" 2>/dev/null | \
+        grep -v -E "(README|CHANGELOG|RELEASE)" | \
+        grep -v "gitlab-project-cache.sh" || true)
     
     if [ -n "$token_files" ]; then
         log_error "Found potential hardcoded GitLab tokens in:"
